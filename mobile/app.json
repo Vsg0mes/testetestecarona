@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "Carona Universitária",
+    "slug": "carona-universitaria",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Usamos sua localização para o botão SOS e o mapa."
+        }
+      ],
+      "expo-asset"
+    ],
+    "extra": {
+      "apiUrl": "http://192.168.0.10:3000"
+    }
+  }
+}

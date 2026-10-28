@@ -1,0 +1,55 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: carona_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-carona}
+      POSTGRES_USER: ${POSTGRES_USER:-carona}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./db/002_chat_livre.sql:/docker-entrypoint-initdb.d/02-chat_livre.sql:ro
+      - ./db/003_localizacao.sql:/docker-entrypoint-initdb.d/03-localizacao.sql:ro
+    networks:
+      - backend_net        # rede interna: banco NÃO é exposto ao host
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: ./backend
+    container_name: carona_api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgres://${POSTGRES_USER:-carona}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-carona}
+      JWT_SECRET: ${JWT_SECRET:?defina JWT_SECRET no .env}
+      EMAIL_DOMAIN: ${EMAIL_DOMAIN:-@unifeb.edu.br}
+      CAMPUS_LAT: ${CAMPUS_LAT:--20.5747}
+      CAMPUS_LNG: ${CAMPUS_LNG:--48.5612}
+      CAMPUS_RAIO_M: ${CAMPUS_RAIO_M:-500}
+      CHAT_LIVRE: ${CHAT_LIVRE:-true}   # false = só mensagens pré-definidas (anti "Tinder")
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - backend_net
+      - public_net
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  backend_net:
+    internal: true
+  public_net:
+
+volumes:
+  pgdata:
