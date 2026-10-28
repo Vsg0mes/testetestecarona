@@ -31,7 +31,17 @@ router.get('/caronas', async (_req, res) => {
 
 // POST /caronas -> cria carona com geofencing
 router.post('/caronas', async (req, res) => {
-  const { origem, destino, partidaEm, vagas = 1 } = req.body || {};
+  const {
+    origem,
+    destino,
+    partidaEm,
+    horarioPartida,
+    vagas = 1,
+    carroModelo,
+    carroAno,
+    carroCor,
+    carroPlaca,
+  } = req.body || {};
 
   if (!isNum(origem?.lat) || !isNum(origem?.lng) || !isNum(destino?.lat) || !isNum(destino?.lng)) {
     return res.status(400).json({ erro: 'Origem e destino inválidos' });
@@ -40,11 +50,47 @@ router.post('/caronas', async (req, res) => {
     return res.status(422).json({ erro: 'A carona precisa começar ou terminar no campus' });
   }
 
+  // Parse do horário de partida escolhido pelo motorista
+  let dataPartida = new Date();
+  if (partidaEm && !isNaN(new Date(partidaEm).getTime())) {
+    dataPartida = new Date(partidaEm);
+  } else if (horarioPartida && /^\d{1,2}:\d{2}$/.test(horarioPartida)) {
+    const [h, m] = horarioPartida.split(':').map(Number);
+    dataPartida = new Date();
+    dataPartida.setHours(h, m, 0, 0);
+    // Se o horário digitado for mais de 30 minutos no passado de hoje, assume dia seguinte
+    if (dataPartida.getTime() < Date.now() - 30 * 60 * 1000) {
+      dataPartida.setDate(dataPartida.getDate() + 1);
+    }
+  }
+
+  const vagasInt = parseInt(vagas, 10);
+  const vagasValidas = Number.isInteger(vagasInt) && vagasInt >= 1 && vagasInt <= 6 ? vagasInt : 1;
+  const modelo = (carroModelo || req.body?.carro_modelo || '').trim().slice(0, 80) || null;
+  const anoInt = parseInt(carroAno || req.body?.carro_ano, 10);
+  const anoValido = Number.isInteger(anoInt) && anoInt >= 1970 && anoInt <= 2035 ? anoInt : null;
+  const cor = (carroCor || req.body?.carro_cor || '').trim().slice(0, 40) || null;
+  const placa = (carroPlaca || req.body?.carro_placa || '').trim().toUpperCase().slice(0, 20) || null;
+
   try {
     const { rows } = await db.query(
-      `INSERT INTO caronas (motorista_id, origem_lat, origem_lng, destino_lat, destino_lng, partida_em, vagas)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [req.user.id, origem.lat, origem.lng, destino.lat, destino.lng, partidaEm || new Date(), vagas]
+      `INSERT INTO caronas (
+         motorista_id, origem_lat, origem_lng, destino_lat, destino_lng,
+         partida_em, vagas, carro_modelo, carro_ano, carro_cor, carro_placa
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [
+        req.user.id,
+        origem.lat,
+        origem.lng,
+        destino.lat,
+        destino.lng,
+        dataPartida,
+        vagasValidas,
+        modelo,
+        anoValido,
+        cor,
+        placa,
+      ]
     );
     res.status(201).json(rows[0]);
   } catch (e) {

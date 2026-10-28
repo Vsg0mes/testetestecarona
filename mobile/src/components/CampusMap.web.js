@@ -12,34 +12,40 @@ if (typeof document !== 'undefined' && !document.getElementById('leaflet-css')) 
 
 // Web: Leaflet + tiles OpenStreetMap escurecidos via CSS (sem API key)
 function ClickHandler({ onPick }) {
-  useMapEvents({ click: (e) => onPick({ lat: e.latlng.lat, lng: e.latlng.lng }) });
+  useMapEvents({
+    click: (e) => {
+      if (typeof onPick === 'function') {
+        onPick({ lat: e.latlng.lat, lng: e.latlng.lng });
+      }
+    },
+  });
   return null;
 }
 
-export default function CampusMap({ campus, ponto, sentido, onPick, rota, pessoas = [] }) {
+export default function CampusMap({ campus, ponto, sentido = 'IDA', onPick, rota, pessoas = [] }) {
   const c = [campus.lat, campus.lng];
   const p = ponto && [ponto.lat, ponto.lng];
   return (
     <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 0, isolation: 'isolate', overflow: 'hidden' }}>
       <style>{`.tiles-dark { filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(0.9) saturate(0.6); }
-        .leaflet-container { background: #0B1020; cursor: crosshair; }`}</style>
+        .leaflet-container { background: #0B1020; cursor: ${typeof onPick === 'function' ? 'crosshair' : 'default'}; }`}</style>
       <MapContainer center={c} zoom={14} style={{ height: '100%', width: '100%' }} zoomControl={false}>
         <TileLayer
           url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
           className="tiles-dark"
           attribution='&copy; OpenStreetMap'
         />
-        <ClickHandler onPick={onPick} />
+        {typeof onPick === 'function' && <ClickHandler onPick={onPick} />}
         <Circle center={c} radius={campus.raio}
           pathOptions={{ color: colors.primary2, fillColor: colors.primary2, fillOpacity: 0.15 }} />
         <CircleMarker center={c} radius={9}
           pathOptions={{ color: '#fff', weight: 3, fillColor: colors.primary2, fillOpacity: 1 }}>
-          <Tooltip permanent direction="top" offset={[0, -10]}>🎓 Campus</Tooltip>
+          <Tooltip permanent direction="top" offset={[0, -10]}>🎓 Campus UNIFEB</Tooltip>
         </CircleMarker>
         {p && (
           <CircleMarker center={p} radius={8}
             pathOptions={{ color: '#fff', weight: 3, fillColor: colors.primary, fillOpacity: 1 }}>
-            <Tooltip direction="top">Seu ponto</Tooltip>
+            <Tooltip permanent direction="top">📍 Você (GPS Exato)</Tooltip>
           </CircleMarker>
         )}
         {p && (

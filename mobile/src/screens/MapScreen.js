@@ -7,17 +7,21 @@ import { api, errMsg } from '../api/client';
 import { colors } from '../theme';
 import ChatModal from '../components/ChatModal';
 import CaronasListModal from '../components/CaronasListModal';
+import OferecerCaronaModal from '../components/OferecerCaronaModal';
 
 const CAMPUS_FALLBACK = { lat: -20.5747, lng: -48.5612, raio: 500 };
 
 export default function MapScreen({ onLogout }) {
   const [campus, setCampus] = useState(CAMPUS_FALLBACK);
-  const [sentido, setSentido] = useState('IDA'); // IDA = ponto -> campus | VOLTA = campus -> ponto
-  const [ponto, setPonto] = useState(null);       // ponto externo escolhido no mapa
+  const [localizacao, setLocalizacao] = useState(null); // localização REAL obtida via GPS
+  const [permissaoGps, setPermissaoGps] = useState('checking'); // 'checking' | 'granted' | 'denied'
+  const [buscandoGps, setBuscandoGps] = useState(false);
+  const [erroGps, setErroGps] = useState('');
   const [carona, setCarona] = useState(null);
   const [meuId, setMeuId] = useState(null);
   const [chat, setChat] = useState(false);
   const [lista, setLista] = useState(false);
+  const [oferecendo, setOferecendo] = useState(false);
   const [pessoas, setPessoas] = useState([]);
   const ativa = carona && ['EM_ANDAMENTO', 'EMERGENCIA'].includes(carona.status);
 
@@ -106,33 +110,84 @@ export default function MapScreen({ onLogout }) {
       });
   }
 
-  useEffect(() => {
-    api.get('/campus').then(({ data }) => setCampus(data)).catch(() => {});
-    (async () => {
+  const obterLocalizacaoGPS = useCallback(async (manual = false) => {
+    setBuscandoGps(true);
+    setErroGps('');
+    try {
       const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') return;
-      const pos = await Location.getCurrentPositionAsync({});
-      setPonto({ lat: pos.coords.latitude, lng: pos.coords.longitude });
-    })();
+      if (status !== 'granted') {
+        setPermissaoGps('denied');
+        setErroGps('Permissão de GPS negada.');
+        if (manual) {
+          notify(
+            'GPS Obrigatório',
+            'Para evitar fraudes e garantir a segurança, precisamos da sua localização exata para oferecer caronas.'
+          );
+        }
+        return null;
+      }
+      setPermissaoGps('granted');
+      const pos = await Location.getCurrentPositionAsync({
+        accuracy: Platform.OS === 'web' ? Location.Accuracy.Balanced : Location.Accuracy.High,
+      });
+      const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      setLocalizacao(coords);
+      return coords;
+    } catch (e) {
+      console.warn('Erro ao obter GPS:', e);
+      setErroGps('Não foi possível obter sua localização atual via GPS.');
+      if (manual) {
+        notify('Erro de GPS', 'Verifique se o serviço de localização do dispositivo está ativado.');
+      }
+      return null;
+    } finally {
+      setBuscandoGps(false);
+    }
   }, []);
 
-  // Campo travado: um dos lados é SEMPRE o campus
-  const origem = sentido === 'IDA' ? ponto : campus;
-  const destino = sentido === 'IDA' ? campus : ponto;
+  useEffect(() => {
+    api.get('/campus').then(({ data }) => setCampus(data)).catch(() => {});
+    obterLocalizacaoGPS(false);
+  }, [obterLocalizacaoGPS]);
 
-  async function oferecerCarona() {
-    if (!ponto) return notify('Escolha o ponto', 'Clique no mapa para marcar sua origem/destino.');
+  async function iniciarOferecerCarona() {
+    let loc = localizacao;
+    if (!loc) {
+      loc = await obterLocalizacaoGPS(true);
+    }
+    if (!loc) {
+      return notify(
+        'GPS Obrigatório',
+        'Não foi possível obter sua localização exata. Permita o acesso ao GPS do seu dispositivo para continuar.'
+      );
+    }
+    setOferecendo(true);
+  }
+
+  async function confirmarOferecer({ modelo, ano, cor, placa, vagas, partidaEm, horarioPartida }) {
+    if (!localizacao) {
+      notify('GPS não localizado', 'Aguarde a obtenção da sua posição exata via satélite.');
+      return;
+    }
     try {
       const { data } = await api.post('/caronas', {
-        origem: { lat: origem.lat, lng: origem.lng },
-        destino: { lat: destino.lat, lng: destino.lng },
-        partidaEm: new Date().toISOString(),
+        origem: { lat: localizacao.lat, lng: localizacao.lng },
+        destino: { lat: campus.lat, lng: campus.lng },
+        partidaEm,
+        horarioPartida,
+        vagas,
+        carroModelo: modelo,
+        carroAno: ano,
+        carroCor: cor,
+        carroPlaca: placa,
       });
       setCarona(data);
       setMeuId(data.motorista_id);
-      notify('Carona criada ✅', `#${data.id} publicada para a comunidade.`);
+      const horaTexto = new Date(data.partida_em).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      notify('Carona criada ✅', `#${data.id} (${modelo}${ano ? ` ${ano}` : ''}, ${vagas} ${vagas === 1 ? 'vaga' : 'vagas'}, saída às ${horaTexto}) publicada.`);
     } catch (e) {
       notify('🚫 Bloqueado', errMsg(e));
+      throw e;
     }
   }
 
@@ -163,9 +218,9 @@ export default function MapScreen({ onLogout }) {
     <View style={s.root}>
       <CampusMap
         campus={campus}
-        ponto={carona ? null : ponto}
-        sentido={sentido}
-        onPick={carona ? null : setPonto}
+        ponto={carona ? null : localizacao}
+        sentido="IDA"
+        onPick={null}
         rota={carona && {
           origem: { lat: carona.origem_lat, lng: carona.origem_lng },
           destino: { lat: carona.destino_lat, lng: carona.destino_lng },
@@ -206,6 +261,19 @@ export default function MapScreen({ onLogout }) {
                     : '🚨 Emergência acionada'}
               </Text>
             </View>
+            {(carona.carro_modelo || carona.carro_placa) && (
+              <View style={[s.campo, { backgroundColor: 'rgba(11,16,32,0.8)' }]}>
+                <Text style={s.campoLabel}>
+                  {carona.motorista_id === meuId ? 'Seu Veículo Cadastrado' : 'Veículo do Motorista'}
+                </Text>
+                <Text style={s.campoValor}>
+                  🚗 {carona.carro_modelo || 'Veículo'} {carona.carro_ano ? `(${carona.carro_ano})` : ''} {carona.carro_cor ? `· ${carona.carro_cor}` : ''}
+                </Text>
+                <Text style={[s.dica, { color: colors.primary2, marginTop: 4, fontWeight: '700' }]}>
+                  Placa: {carona.carro_placa || '---'} · 💺 {carona.vagas} {carona.vagas === 1 ? 'lugar' : 'lugares'} · 🕒 Saída: {new Date(carona.partida_em).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </Text>
+              </View>
+            )}
             {ativa && (
               <Text style={s.dica}>
                 {(() => {
@@ -231,19 +299,46 @@ export default function MapScreen({ onLogout }) {
           </View>
         ) : (
           <View>
-            <View style={s.toggle}>
-              {['IDA', 'VOLTA'].map((v) => (
-                <TouchableOpacity key={v} style={[s.toggleBtn, sentido === v && s.toggleOn]} onPress={() => setSentido(v)}>
-                  <Text style={s.toggleText}>{v === 'IDA' ? 'Indo p/ campus' : 'Saindo do campus'}</Text>
+            {permissaoGps === 'denied' && (
+              <TouchableOpacity style={s.alertaGps} onPress={() => obterLocalizacaoGPS(true)}>
+                <Text style={s.alertaGpsText}>
+                  ⚠️ Localização bloqueada. Toque aqui para permitir o GPS.
+                </Text>
+              </TouchableOpacity>
+            )}
+
+            {/* Origem: travada na localização real do usuário via GPS */}
+            <View style={s.campo}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text style={s.campoLabel}>Origem (Sua Localização GPS Real)</Text>
+                <TouchableOpacity onPress={() => obterLocalizacaoGPS(true)} disabled={buscandoGps}>
+                  <Text style={s.linkAtualizar}>
+                    {buscandoGps ? '⏳ Buscando...' : '🔄 Atualizar GPS'}
+                  </Text>
                 </TouchableOpacity>
-              ))}
+              </View>
+              <Text style={s.campoValor} numberOfLines={1}>
+                {localizacao
+                  ? `📍 ${localizacao.lat.toFixed(4)}, ${localizacao.lng.toFixed(4)} (GPS Validado)`
+                  : buscandoGps
+                    ? '📡 Conectando ao GPS do dispositivo...'
+                    : '⚠️ Toque em "Atualizar GPS" para localizar'}
+              </Text>
             </View>
 
-            <Campo label="Origem" valor={origem} travado={sentido === 'VOLTA'} />
-            <Campo label="Destino" valor={destino} travado={sentido === 'IDA'} />
+            {/* Destino: travado no campus */}
+            <View style={s.campo}>
+              <Text style={s.campoLabel}>Destino (Fixo)</Text>
+              <Text style={s.campoValor}>
+                🔒 Campus UNIFEB (Travado)
+              </Text>
+            </View>
 
             <View style={{ flexDirection: 'row', gap: 10, marginTop: 8 }}>
-              <TouchableOpacity style={[s.btn, { flex: 1 }]} onPress={oferecerCarona}>
+              <TouchableOpacity
+                style={[s.btn, { flex: 1 }, !localizacao && { opacity: 0.6 }]}
+                onPress={iniciarOferecerCarona}
+              >
                 <Text style={s.btnText}>Oferecer carona</Text>
               </TouchableOpacity>
               <TouchableOpacity style={[s.btn, s.btnGhost, { flex: 1 }]} onPress={() => setLista(true)}>
@@ -256,17 +351,13 @@ export default function MapScreen({ onLogout }) {
 
       <ChatModal visible={chat} onClose={() => setChat(false)} caronaId={carona?.id} meuId={meuId} />
       <CaronasListModal visible={lista} onClose={() => setLista(false)} campus={campus} meuId={meuId} onEntrar={entrar} />
-    </View>
-  );
-}
-
-function Campo({ label, valor, travado }) {
-  return (
-    <View style={s.campo}>
-      <Text style={s.campoLabel}>{label}</Text>
-      <Text style={s.campoValor} numberOfLines={1}>
-        {travado ? '🔒 Campus (fixo)' : valor ? `📍 ${valor.lat.toFixed(4)}, ${valor.lng.toFixed(4)}` : 'Toque no mapa'}
-      </Text>
+      <OferecerCaronaModal
+        visible={oferecendo}
+        onClose={() => setOferecendo(false)}
+        onConfirmar={confirmarOferecer}
+        sentido="IDA"
+        ponto={localizacao}
+      />
     </View>
   );
 }
@@ -293,11 +384,26 @@ const s = StyleSheet.create({
     borderWidth: 1, borderColor: colors.border,
   },
   alerta: { color: colors.danger, fontWeight: '800', textAlign: 'center', marginBottom: 10 },
+  alertaGps: {
+    backgroundColor: 'rgba(255, 59, 92, 0.15)',
+    borderColor: colors.danger,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 10,
+    marginBottom: 10,
+  },
+  alertaGpsText: {
+    color: colors.danger,
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  linkAtualizar: {
+    color: colors.primary2,
+    fontSize: 12,
+    fontWeight: '700',
+  },
   dica: { color: colors.muted, fontSize: 11, marginTop: 2 },
-  toggle: { flexDirection: 'row', backgroundColor: colors.card, borderRadius: 14, padding: 4, marginBottom: 12 },
-  toggleBtn: { flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
-  toggleOn: { backgroundColor: colors.primary },
-  toggleText: { color: colors.text, fontWeight: '600' },
   campo: {
     backgroundColor: colors.card, borderRadius: 12, padding: 12, marginBottom: 8,
     borderWidth: 1, borderColor: colors.border,

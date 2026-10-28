@@ -12,6 +12,7 @@ services:
       - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
       - ./db/002_chat_livre.sql:/docker-entrypoint-initdb.d/02-chat_livre.sql:ro
       - ./db/003_localizacao.sql:/docker-entrypoint-initdb.d/03-localizacao.sql:ro
+      - ./db/004_veiculo.sql:/docker-entrypoint-initdb.d/04-veiculo.sql:ro
     networks:
       - backend_net        # rede interna: banco NÃO é exposto ao host
     healthcheck:
