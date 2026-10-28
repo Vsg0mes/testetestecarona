@@ -46,6 +46,19 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  web:
+    build:
+      context: ./mobile
+      dockerfile: Dockerfile
+    container_name: carona_web
+    restart: unless-stopped
+    ports:
+      - "8081:80"
+    depends_on:
+      - api
+    networks:
+      - public_net
+
 networks:
   backend_net:
     internal: true

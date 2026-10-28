@@ -1,0 +1,14 @@
+# Estágio de build do bundle estático web do Expo
+FROM node:22-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+COPY . .
+RUN npx expo export --platform web --output-dir dist
+
+# Estágio final servido por Nginx leve
+FROM nginx:alpine
+COPY --from=builder /app/dist /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+
