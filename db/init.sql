@@ -76,12 +76,36 @@ CREATE TABLE mensagens_carona (
 );
 CREATE INDEX idx_msg_carona ON mensagens_carona(carona_id, enviado_em);
 
+-- ---------- Agentes de Segurança do Campus ----------
+CREATE TABLE agentes_seguranca (
+  id          SERIAL PRIMARY KEY,
+  login       VARCHAR(40) UNIQUE NOT NULL,
+  nome        VARCHAR(120) NOT NULL,
+  senha_hash  TEXT NOT NULL,
+  criado_em   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- ---------- Telemetria / SOS (log centralizado no Postgres) ----------
 CREATE TABLE eventos_sos (
-  id         BIGSERIAL PRIMARY KEY,
-  carona_id  INT NOT NULL REFERENCES caronas(id) ON DELETE CASCADE,
-  usuario_id INT NOT NULL REFERENCES usuarios(id),
-  lat        DOUBLE PRECISION,
-  lng        DOUBLE PRECISION,
-  criado_em  TIMESTAMPTZ NOT NULL DEFAULT now()
+  id           BIGSERIAL PRIMARY KEY,
+  carona_id    INT NOT NULL REFERENCES caronas(id) ON DELETE CASCADE,
+  usuario_id   INT NOT NULL REFERENCES usuarios(id),
+  lat          DOUBLE PRECISION,
+  lng          DOUBLE PRECISION,
+  status       VARCHAR(20) NOT NULL DEFAULT 'ABERTO',
+  atendido_por INT REFERENCES agentes_seguranca(id) ON DELETE SET NULL,
+  atendido_em  TIMESTAMPTZ,
+  resolvido_em TIMESTAMPTZ,
+  observacao   VARCHAR(300),
+  criado_em    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT chk_eventos_sos_status
+    CHECK (status IN ('ABERTO', 'EM_ATENDIMENTO', 'RESOLVIDO', 'FALSO_ALARME'))
 );
+
+CREATE INDEX idx_eventos_sos_abertos
+  ON eventos_sos (criado_em DESC)
+  WHERE status IN ('ABERTO', 'EM_ATENDIMENTO');
+
+CREATE INDEX idx_eventos_sos_carona_abertos
+  ON eventos_sos (carona_id)
+  WHERE status IN ('ABERTO', 'EM_ATENDIMENTO');

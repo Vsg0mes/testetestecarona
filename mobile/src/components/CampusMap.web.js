@@ -1,4 +1,5 @@
-import { MapContainer, TileLayer, Circle, CircleMarker, Polyline, Tooltip, useMapEvents } from 'react-leaflet';
+import { useEffect } from 'react';
+import { MapContainer, TileLayer, Circle, CircleMarker, Polyline, Tooltip, useMapEvents, useMap } from 'react-leaflet';
 import { colors } from '../theme';
 
 // Garante o CSS do Leaflet (sem ele os tiles se espalham pela página inteira)
@@ -22,9 +23,22 @@ function ClickHandler({ onPick }) {
   return null;
 }
 
-export default function CampusMap({ campus, ponto, sentido = 'IDA', onPick, rota, pessoas = [] }) {
+function FocoSos({ sos }) {
+  const map = useMap();
+  useEffect(() => {
+    if (sos && typeof sos.lat === 'number' && typeof sos.lng === 'number') {
+      map.setView([sos.lat, sos.lng], 15, { animate: true });
+    }
+  }, [map, sos?.id, sos?.lat, sos?.lng]);
+  return null;
+}
+
+export default function CampusMap({ campus, ponto, sentido = 'IDA', onPick, rota, pessoas = [], sos = null }) {
   const c = [campus.lat, campus.lng];
   const p = ponto && [ponto.lat, ponto.lng];
+  const temSosCoord = sos && typeof sos.lat === 'number' && typeof sos.lng === 'number';
+  const sosPos = temSosCoord ? [sos.lat, sos.lng] : null;
+
   return (
     <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 0, isolation: 'isolate', overflow: 'hidden' }}>
       <style>{`.tiles-dark { filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(0.9) saturate(0.6); }
@@ -36,6 +50,7 @@ export default function CampusMap({ campus, ponto, sentido = 'IDA', onPick, rota
           attribution='&copy; OpenStreetMap'
         />
         {typeof onPick === 'function' && <ClickHandler onPick={onPick} />}
+        <FocoSos sos={sos} />
         <Circle center={c} radius={campus.raio}
           pathOptions={{ color: colors.primary2, fillColor: colors.primary2, fillOpacity: 0.15 }} />
         <CircleMarker center={c} radius={9}
@@ -65,6 +80,18 @@ export default function CampusMap({ campus, ponto, sentido = 'IDA', onPick, rota
             </Tooltip>
           </CircleMarker>
         ))}
+        {sosPos && (
+          <>
+            <Circle center={sosPos} radius={120}
+              pathOptions={{ color: colors.danger, fillColor: colors.danger, fillOpacity: 0.25, weight: 2 }} />
+            <CircleMarker center={sosPos} radius={14}
+              pathOptions={{ color: '#fff', weight: 4, fillColor: colors.danger, fillOpacity: 1 }}>
+              <Tooltip permanent direction="top" offset={[0, -14]}>
+                🚨 SOS #{sos.id}{sos.carro_placa ? ` · ${sos.carro_placa}` : ''}
+              </Tooltip>
+            </CircleMarker>
+          </>
+        )}
       </MapContainer>
     </div>
   );

@@ -114,16 +114,37 @@ router.post('/caronas/:id/entrar', async (req, res) => {
   res.json(rows[0]);
 });
 
-// GET /minha-carona -> id do usuário + carona ativa (motorista ou passageiro)
+// GET /minha-carona -> id do usuário + carona ativa (motorista ou passageiro) + status do SOS
 router.get('/minha-carona', async (req, res) => {
   const { rows } = await db.query(
-    `SELECT c.*, m.nome AS motorista_nome, p.nome AS passageiro_nome
+    `SELECT c.*,
+            m.nome AS motorista_nome,
+            p.nome AS passageiro_nome,
+            sos.id AS sos_id,
+            sos.status AS sos_status,
+            sos.atendido_em AS sos_atendido_em,
+            ag.nome AS sos_agente_nome
      FROM caronas c
      JOIN usuarios m ON m.id = c.motorista_id
      LEFT JOIN usuarios p ON p.id = c.passageiro_id
+     LEFT JOIN LATERAL (
+       SELECT s.id, s.status, s.atendido_por, s.atendido_em
+       FROM eventos_sos s
+       WHERE s.carona_id = c.id
+       ORDER BY s.criado_em DESC
+       LIMIT 1
+     ) sos ON true
+     LEFT JOIN agentes_seguranca ag ON ag.id = sos.atendido_por
      WHERE (c.motorista_id = $1 OR c.passageiro_id = $1)
        AND c.status IN ('ABERTA', 'EM_ANDAMENTO', 'EMERGENCIA')
-     ORDER BY c.criado_em DESC LIMIT 1`,
+     ORDER BY
+       CASE c.status
+         WHEN 'EMERGENCIA' THEN 1
+         WHEN 'EM_ANDAMENTO' THEN 2
+         ELSE 3
+       END,
+       c.criado_em DESC
+     LIMIT 1`,
     [req.user.id]
   );
   res.json({ usuarioId: req.user.id, carona: rows[0] || null });
@@ -171,29 +192,160 @@ router.get('/caronas/:id/localizacoes', async (req, res) => {
   res.json(rows);
 });
 
-// POST /caronas/:id/sos -> EMERGÊNCIA
-router.post('/caronas/:id/sos', async (req, res) => {
-  const carona = await carregarCaronaDoUsuario(req.params.id, req.user.id);
-  if (!carona) return res.status(404).json({ erro: 'Carona não encontrada' });
+async function dispararWebhookSos(sos, carona, usuarioId) {
+  const webhookUrl = (process.env.SOS_WEBHOOK_URL || '').trim();
+  if (!webhookUrl) return;
+  try {
+    const { rows } = await db.query(
+      `SELECT um.nome AS motorista_nome, up.nome AS passageiro_nome, ua.nome AS acionado_por_nome
+       FROM caronas c
+       JOIN usuarios um ON um.id = c.motorista_id
+       LEFT JOIN usuarios up ON up.id = c.passageiro_id
+       LEFT JOIN usuarios ua ON ua.id = $2
+       WHERE c.id = $1`,
+      [carona.id, usuarioId]
+    );
+    const info = rows[0] || {};
+    const lat = sos.lat ?? carona.sos_lat ?? carona.origem_lat;
+    const lng = sos.lng ?? carona.sos_lng ?? carona.origem_lng;
+    const payload = {
+      evento: 'SOS_ACIONADO',
+      sosId: Number(sos.id),
+      caronaId: carona.id,
+      acionadoPor: info.acionado_por_nome || `Usuário #${usuarioId}`,
+      motorista: info.motorista_nome || null,
+      passageiro: info.passageiro_nome || null,
+      placa: carona.carro_placa || null,
+      veiculo: {
+        modelo: carona.carro_modelo,
+        ano: carona.carro_ano,
+        cor: carona.carro_cor,
+        placa: carona.carro_placa,
+      },
+      lat,
+      lng,
+      mapaUrl:
+        typeof lat === 'number' && typeof lng === 'number'
+          ? `https://www.google.com/maps?q=${lat},${lng}`
+          : null,
+      criadoEm: sos.criado_em,
+    };
+    await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(3000),
+    });
+  } catch (err) {
+    console.warn(`[SOS Webhook] Falha ao enviar notificação externa: ${err.message}`);
+  }
+}
 
-  const lat = isNum(req.body?.lat) ? req.body.lat : null;
-  const lng = isNum(req.body?.lng) ? req.body.lng : null;
+// POST /caronas/:id/sos -> EMERGÊNCIA (idempotente para SOS ativo na mesma carona; motorista ou passageiro)
+router.post('/caronas/:id/sos', async (req, res) => {
+  const caronaPerm = await carregarCaronaDoUsuario(req.params.id, req.user.id);
+  if (!caronaPerm) return res.status(404).json({ erro: 'Carona não encontrada' });
+  if (['FINALIZADA', 'CANCELADA'].includes(caronaPerm.status)) {
+    return res.status(409).json({ erro: 'Não é possível acionar SOS em carona encerrada' });
+  }
+
+  let lat = isNum(req.body?.lat) ? req.body.lat : null;
+  let lng = isNum(req.body?.lng) ? req.body.lng : null;
 
   const client = await db.pool.connect();
   try {
     await client.query('BEGIN');
-    const { rows } = await client.query(
+
+    // Trava a linha da carona para garantir idempotência concorrente
+    const { rows: caronaLockRows } = await client.query(
+      `SELECT c.*, m.nome AS motorista_nome, p.nome AS passageiro_nome
+       FROM caronas c
+       JOIN usuarios m ON m.id = c.motorista_id
+       LEFT JOIN usuarios p ON p.id = c.passageiro_id
+       WHERE c.id = $1
+       FOR UPDATE OF c`,
+      [caronaPerm.id]
+    );
+    const caronaAtual = caronaLockRows[0];
+
+    // Se já houver SOS não resolvido (ABERTO ou EM_ATENDIMENTO) para esta carona, reutiliza
+    const { rows: sosExistentes } = await client.query(
+      `SELECT s.*, ag.nome AS sos_agente_nome
+       FROM eventos_sos s
+       LEFT JOIN agentes_seguranca ag ON ag.id = s.atendido_por
+       WHERE s.carona_id = $1 AND s.status IN ('ABERTO', 'EM_ATENDIMENTO')
+       ORDER BY s.criado_em DESC
+       LIMIT 1`,
+      [caronaAtual.id]
+    );
+
+    if (sosExistentes[0]) {
+      const sosExistente = sosExistentes[0];
+      let caronaRetorno = caronaAtual;
+      if (caronaAtual.status !== 'EMERGENCIA') {
+        const { rows: upRows } = await client.query(
+          `UPDATE caronas SET status = 'EMERGENCIA' WHERE id = $1 RETURNING *`,
+          [caronaAtual.id]
+        );
+        caronaRetorno = { ...caronaAtual, ...upRows[0] };
+      }
+      await client.query('COMMIT');
+      return res.json({
+        ...caronaRetorno,
+        sos_id: Number(sosExistente.id),
+        sos_status: sosExistente.status,
+        sos_atendido_em: sosExistente.atendido_em,
+        sos_agente_nome: sosExistente.sos_agente_nome || null,
+        sos: { ...sosExistente, id: Number(sosExistente.id) },
+      });
+    }
+
+    // Se o cliente não enviou coordenadas no body, tenta a última posição ao vivo ou origem da carona
+    if (lat === null || lng === null) {
+      const { rows: locRows } = await client.query(
+        `SELECT lat, lng FROM localizacoes_carona
+         WHERE carona_id = $1
+         ORDER BY (usuario_id = $2) DESC, atualizado_em DESC
+         LIMIT 1`,
+        [caronaAtual.id, req.user.id]
+      );
+      if (locRows[0]) {
+        lat = locRows[0].lat;
+        lng = locRows[0].lng;
+      } else {
+        lat = caronaAtual.origem_lat;
+        lng = caronaAtual.origem_lng;
+      }
+    }
+
+    const { rows: upCarona } = await client.query(
       `UPDATE caronas SET status = 'EMERGENCIA', sos_em = now(), sos_lat = $2, sos_lng = $3
        WHERE id = $1 RETURNING *`,
-      [carona.id, lat, lng]
+      [caronaAtual.id, lat, lng]
     );
-    await client.query(
-      `INSERT INTO eventos_sos (carona_id, usuario_id, lat, lng) VALUES ($1,$2,$3,$4)`,
-      [carona.id, req.user.id, lat, lng]
+    const { rows: novoSosRows } = await client.query(
+      `INSERT INTO eventos_sos (carona_id, usuario_id, lat, lng, status)
+       VALUES ($1, $2, $3, $4, 'ABERTO')
+       RETURNING *`,
+      [caronaAtual.id, req.user.id, lat, lng]
     );
     await client.query('COMMIT');
-    console.warn(`[SOS] carona=${carona.id} usuario=${req.user.id} lat=${lat} lng=${lng}`);
-    res.json(rows[0]);
+
+    const novoSos = novoSosRows[0];
+    const caronaFinal = {
+      ...caronaAtual,
+      ...upCarona[0],
+      sos_id: Number(novoSos.id),
+      sos_status: novoSos.status,
+      sos_atendido_em: null,
+      sos_agente_nome: null,
+      sos: { ...novoSos, id: Number(novoSos.id) },
+    };
+
+    console.warn(`[SOS] id=${novoSos.id} carona=${caronaAtual.id} usuario=${req.user.id} lat=${lat} lng=${lng}`);
+    dispararWebhookSos(novoSos, caronaFinal, req.user.id);
+
+    return res.json(caronaFinal);
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;

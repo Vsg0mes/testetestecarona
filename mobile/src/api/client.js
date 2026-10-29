@@ -5,6 +5,7 @@ import { storage } from './storage';
 
 const TOKEN_KEY = 'carona_jwt';
 
+<<<<<<< HEAD
 // No navegador a API pode estar atrás de um proxy reverso (Nginx/ngrok HTTPS) ou na mesma máquina
 const getBaseURL = () => {
   if (Platform.OS === 'web') {
@@ -25,6 +26,12 @@ const getBaseURL = () => {
 };
 
 const baseURL = getBaseURL();
+=======
+// Na web usa o proxy reverso /api do mesmo host/protocolo (funciona em localhost e HTTPS/ngrok sem Mixed Content)
+const baseURL = Platform.OS === 'web'
+  ? '/api'
+  : Constants.expoConfig?.extra?.apiUrl;
+>>>>>>> 7ff24a0 (feat: enhance login and security screens, add security panel functionality)
 
 export const api = axios.create({ baseURL, timeout: 10000 });
 

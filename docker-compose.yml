@@ -13,6 +13,8 @@ services:
       - ./db/002_chat_livre.sql:/docker-entrypoint-initdb.d/02-chat_livre.sql:ro
       - ./db/003_localizacao.sql:/docker-entrypoint-initdb.d/03-localizacao.sql:ro
       - ./db/004_veiculo.sql:/docker-entrypoint-initdb.d/04-veiculo.sql:ro
+      - ./db/005_ano_veiculo.sql:/docker-entrypoint-initdb.d/05-ano_veiculo.sql:ro
+      - ./db/006_seguranca.sql:/docker-entrypoint-initdb.d/06-seguranca.sql:ro
     networks:
       - backend_net        # rede interna: banco NÃO é exposto ao host
     healthcheck:
@@ -35,6 +37,9 @@ services:
       CAMPUS_LNG: ${CAMPUS_LNG:--48.5612}
       CAMPUS_RAIO_M: ${CAMPUS_RAIO_M:-500}
       CHAT_LIVRE: ${CHAT_LIVRE:-true}   # false = só mensagens pré-definidas (anti "Tinder")
+      SEED_AGENTES: ${SEED_AGENTES:-true}
+      SEG_SENHA_DEMO: ${SEG_SENHA_DEMO:-Campus@2026}
+      SOS_WEBHOOK_URL: ${SOS_WEBHOOK_URL:-}
     ports:
       - "3000:3000"
     depends_on:

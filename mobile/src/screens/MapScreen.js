@@ -86,7 +86,7 @@ export default function MapScreen({ onLogout }) {
 
   useEffect(() => {
     sincronizar();
-    const t = setInterval(sincronizar, 5000); // motorista vê quando alguém entra
+    const t = setInterval(sincronizar, 3000); // atualiza carona e status do SOS (assumido/resolvido)
     return () => clearInterval(t);
   }, [sincronizar]);
 
@@ -226,6 +226,12 @@ export default function MapScreen({ onLogout }) {
           destino: { lat: carona.destino_lat, lng: carona.destino_lng },
         }}
         pessoas={pessoas}
+        sos={emergencia ? {
+          id: carona.sos_id || carona.id,
+          lat: typeof carona.sos_lat === 'number' ? carona.sos_lat : carona.origem_lat,
+          lng: typeof carona.sos_lng === 'number' ? carona.sos_lng : carona.origem_lng,
+          carro_placa: carona.carro_placa,
+        } : null}
       />
 
       {/* Header */}
@@ -246,7 +252,16 @@ export default function MapScreen({ onLogout }) {
 
       {/* Painel: carona ativa OU formulário travado */}
       <View style={s.panel}>
-        {emergencia && <Text style={s.alerta}>🚨 Carona em EMERGÊNCIA</Text>}
+        {emergencia && (
+          <View style={s.sosStatusBox}>
+            <Text style={s.alerta}>🚨 Carona em EMERGÊNCIA</Text>
+            <Text style={s.sosStatusDetalhe}>
+              {carona.sos_status === 'EM_ATENDIMENTO' && carona.sos_agente_nome
+                ? `🛡️ Assumido por ${carona.sos_agente_nome}`
+                : '⏳ Aguardando agente da Segurança do Campus assumir o chamado...'}
+            </Text>
+          </View>
+        )}
 
         {carona ? (
           <View>
@@ -383,7 +398,21 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(18,24,51,0.96)', borderTopLeftRadius: 28, borderTopRightRadius: 28,
     borderWidth: 1, borderColor: colors.border,
   },
-  alerta: { color: colors.danger, fontWeight: '800', textAlign: 'center', marginBottom: 10 },
+  alerta: { color: colors.danger, fontWeight: '800', textAlign: 'center', marginBottom: 4 },
+  sosStatusBox: {
+    backgroundColor: 'rgba(255, 59, 92, 0.14)',
+    borderColor: colors.danger,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 10,
+    marginBottom: 10,
+  },
+  sosStatusDetalhe: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
   alertaGps: {
     backgroundColor: 'rgba(255, 59, 92, 0.15)',
     borderColor: colors.danger,

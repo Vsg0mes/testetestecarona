@@ -7,7 +7,7 @@ import { colors } from '../theme';
 
 const DOMAIN = '@unifeb.edu.br';
 
-export default function LoginScreen({ onLogin }) {
+export default function LoginScreen({ onLogin, onIrSeguranca }) {
   const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
   const [erro, setErro] = useState('');
@@ -56,6 +56,12 @@ export default function LoginScreen({ onLogin }) {
       </View>
 
       <Text style={s.footer}>🔒 SSO institucional • Sessão protegida no dispositivo</Text>
+
+      {typeof onIrSeguranca === 'function' && (
+        <TouchableOpacity style={s.segLink} onPress={onIrSeguranca}>
+          <Text style={s.segLinkText}>🛡️ Acesso da Segurança</Text>
+        </TouchableOpacity>
+      )}
     </KeyboardAvoidingView>
   );
 }
@@ -69,7 +75,10 @@ const s = StyleSheet.create({
   logo: { fontSize: 48, textAlign: 'center' },
   title: { color: colors.text, fontSize: 28, fontWeight: '800', textAlign: 'center', marginTop: 8 },
   subtitle: { color: colors.muted, textAlign: 'center', marginTop: 8, marginBottom: 32 },
-  card: { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1, borderRadius: 20, padding: 20 },
+  card: {
+    backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1, borderRadius: 20, padding: 20,
+    width: '100%', maxWidth: 440, alignSelf: 'center',
+  },
   input: {
     color: colors.text, borderColor: colors.border, borderWidth: 1, borderRadius: 12,
     paddingHorizontal: 14, paddingVertical: 12, fontSize: 16, marginBottom: 12,
@@ -78,4 +87,6 @@ const s = StyleSheet.create({
   btn: { backgroundColor: colors.primary, borderRadius: 14, paddingVertical: 16, alignItems: 'center' },
   btnText: { color: '#fff', fontWeight: '700', fontSize: 16 },
   footer: { color: colors.muted, textAlign: 'center', marginTop: 24, fontSize: 12 },
+  segLink: { alignSelf: 'center', marginTop: 18, paddingVertical: 6, paddingHorizontal: 12 },
+  segLinkText: { color: colors.muted, fontSize: 12, fontWeight: '600', textDecorationLine: 'underline' },
 });

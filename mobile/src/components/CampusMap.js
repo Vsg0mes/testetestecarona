@@ -3,9 +3,12 @@ import MapView, { Marker, Circle, Polyline } from 'react-native-maps';
 import { colors } from '../theme';
 
 // Nativo: react-native-maps
-export default function CampusMap({ campus, ponto, sentido = 'IDA', onPick, rota, pessoas = [] }) {
+export default function CampusMap({ campus, ponto, sentido = 'IDA', onPick, rota, pessoas = [], sos = null }) {
   const c = { latitude: campus.lat, longitude: campus.lng };
   const p = ponto && { latitude: ponto.lat, longitude: ponto.lng };
+  const sosCoord = sos && typeof sos.lat === 'number' && typeof sos.lng === 'number'
+    ? { latitude: sos.lat, longitude: sos.lng }
+    : null;
   return (
     <MapView
       style={StyleSheet.absoluteFill}
@@ -37,6 +40,13 @@ export default function CampusMap({ campus, ponto, sentido = 'IDA', onPick, rota
           title={`${u.papel === 'MOTORISTA' ? '🚗' : '🧍'} ${u.eu ? 'Você' : u.nome}`}
           pinColor={u.papel === 'MOTORISTA' ? 'orange' : 'green'} />
       ))}
+      {sosCoord && (
+        <Marker
+          coordinate={sosCoord}
+          title={`🚨 SOS #${sos.id}${sos.carro_placa ? ` · ${sos.carro_placa}` : ''}`}
+          pinColor="red"
+        />
+      )}
     </MapView>
   );
 }
