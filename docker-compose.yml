@@ -16,6 +16,8 @@ services:
       - ./db/005_ano_veiculo.sql:/docker-entrypoint-initdb.d/05-ano_veiculo.sql:ro
       - ./db/006_seguranca.sql:/docker-entrypoint-initdb.d/06-seguranca.sql:ro
       - ./db/007_embarque_e_rotas.sql:/docker-entrypoint-initdb.d/07-embarque_e_rotas.sql:ro
+      - ./db/008_sos_silencioso.sql:/docker-entrypoint-initdb.d/08-sos_silencioso.sql:ro
+      - ./db/009_chat_sos_e_identificacao.sql:/docker-entrypoint-initdb.d/09-chat_sos_e_identificacao.sql:ro
     networks:
       - backend_net        # rede interna: banco NÃO é exposto ao host
     healthcheck:

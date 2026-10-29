@@ -15,6 +15,7 @@ import { notify, confirm } from '../ui/dialogs';
 import { api, errMsg } from '../api/client';
 import { colors } from '../theme';
 import ChatModal from '../components/ChatModal';
+import SosChatModal from '../components/SosChatModal';
 import CaronasListModal from '../components/CaronasListModal';
 import OferecerCaronaModal from '../components/OferecerCaronaModal';
 
@@ -29,6 +30,7 @@ export default function MapScreen({ onLogout }) {
   const [carona, setCarona] = useState(null);
   const [meuId, setMeuId] = useState(null);
   const [chat, setChat] = useState(false);
+  const [chatSos, setChatSos] = useState(false);
   const [lista, setLista] = useState(false);
   const [oferecendo, setOferecendo] = useState(false);
   const [pessoas, setPessoas] = useState([]);
@@ -413,28 +415,30 @@ export default function MapScreen({ onLogout }) {
     }
   }
 
-  function confirmarSOS() {
-    if (!carona) return notify('SOS', 'Sem carona ativa. Em perigo, ligue 190.');
-    confirm('Acionar SOS?', 'A segurança do campus será notificada imediatamente.', 'ACIONAR', dispararSOS);
-  }
-
   async function dispararSOS() {
-    if (Platform.OS !== 'web') Vibration.vibrate([0, 300, 150, 300]);
+    if (!carona) return notify('SOS', 'Sem carona ativa. Em perigo, ligue 190.');
     let coords = {};
-    try {
-      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-      coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-    } catch {}
+    if (localizacao && typeof localizacao.lat === 'number' && typeof localizacao.lng === 'number') {
+      coords = { lat: localizacao.lat, lng: localizacao.lng };
+    } else {
+      try {
+        const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+        coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      } catch {}
+    }
     try {
       const { data } = await api.post(`/caronas/${carona.id}/sos`, coords);
       setCarona(data);
-      notify('🚨 EMERGÊNCIA registrada', 'Mantenha a calma. Ajuda a caminho.');
+      setChatSos(true);
     } catch (e) {
       notify('Falha no SOS', `${errMsg(e)}\nLigue 190.`);
     }
   }
 
-  const emergencia = carona?.status === 'EMERGENCIA';
+  // SOS Silencioso / Unilateral: apenas o próprio autor do SOS recebe sos_status do backend
+  const meuSosAtivo = Boolean(
+    carona?.sos_status && ['ABERTO', 'EM_ATENDIMENTO'].includes(carona.sos_status)
+  );
   const passageiroAtual = carona?.passageiro_atual || carona?.paradas?.[0] || null;
   const embarcados = carona?.passageiros_embarcados || [];
   const paradasPendentes = carona?.paradas || [];
@@ -458,16 +462,7 @@ export default function MapScreen({ onLogout }) {
         rota={rotaParaMapa}
         pessoas={pessoas}
         paradas={paradasPendentes}
-        sos={
-          emergencia
-            ? {
-                id: carona.sos_id || carona.id,
-                lat: typeof carona.sos_lat === 'number' ? carona.sos_lat : carona.origem_lat,
-                lng: typeof carona.sos_lng === 'number' ? carona.sos_lng : carona.origem_lng,
-                carro_placa: carona.carro_placa,
-              }
-            : null
-        }
+        sos={null}
       />
 
       {/* Header */}
@@ -478,27 +473,43 @@ export default function MapScreen({ onLogout }) {
         </TouchableOpacity>
       </View>
 
-      {/* SOS em destaque */}
+      {/* Botão de SOS Silencioso: feedback discreto apenas para o usuário que acionou */}
       <TouchableOpacity
-        style={[s.sos, emergencia && { backgroundColor: '#8B0000' }]}
+        style={[s.sos, meuSosAtivo && s.sosSilenciosoAtivo]}
         onLongPress={dispararSOS}
-        onPress={confirmarSOS}
-        delayLongPress={800}
+        onPress={dispararSOS}
+        delayLongPress={500}
       >
-        <Text style={s.sosText}>SOS</Text>
+        <Text style={[s.sosText, meuSosAtivo && s.sosTextAtivo]}>
+          {meuSosAtivo ? '🛡️ SOS' : 'SOS'}
+        </Text>
+        {meuSosAtivo && <Text style={s.sosSubText}>ATIVO</Text>}
       </TouchableOpacity>
 
-      {/* Painel inferior */}
+      {/* Painel inferior (mantém modo normal de navegação mesmo durante SOS silencioso) */}
       <View style={s.panel}>
-        {emergencia && (
-          <View style={s.sosStatusBox}>
-            <Text style={s.alerta}>🚨 Carona em EMERGÊNCIA</Text>
-            <Text style={s.sosStatusDetalhe}>
-              {carona.sos_status === 'EM_ATENDIMENTO' && carona.sos_agente_nome
-                ? `🛡️ Assumido por ${carona.sos_agente_nome}`
-                : '⏳ Aguardando agente da Segurança do Campus assumir o chamado...'}
-            </Text>
-          </View>
+        {meuSosAtivo && (
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => setChatSos(true)}
+            style={s.sosSilenciosoBox}
+          >
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <View style={{ flex: 1, marginRight: 8 }}>
+                <Text style={s.sosSilenciosoTitulo}>
+                  🛡️ SOS silencioso enviado (visível apenas para você)
+                </Text>
+                <Text style={s.sosSilenciosoDetalhe}>
+                  {carona.sos_status === 'EM_ATENDIMENTO' && carona.sos_agente_nome
+                    ? `Acompanhamento ativo por ${carona.sos_agente_nome}`
+                    : 'A Segurança do Campus recebeu sua localização em tempo real.'}
+                </Text>
+              </View>
+              <View style={s.sosChatPill}>
+                <Text style={s.sosChatPillText}>💬 Chat Segurança</Text>
+              </View>
+            </View>
+          </TouchableOpacity>
         )}
 
         {carona ? (
@@ -515,15 +526,13 @@ export default function MapScreen({ onLogout }) {
               </View>
 
               <Text style={s.campoValor}>
-                {emergencia
-                  ? '🚨 Emergência acionada'
-                  : passageiroAtual
-                    ? `🚗 A caminho de ${passageiroAtual.nome} (Parada de coleta)`
-                    : embarcados.length > 0
-                      ? carona.status === 'ABERTA'
-                        ? `🎓 Rumo ao Campus UNIFEB · 📢 Buscando + passageiros`
-                        : `🎓 Em rota final para o Campus UNIFEB`
-                      : '⏳ Aguardando solicitação de passageiro'}
+                {passageiroAtual
+                  ? `🚗 A caminho de ${passageiroAtual.nome} (Parada de coleta)`
+                  : embarcados.length > 0
+                    ? carona.status === 'ABERTA'
+                      ? `🎓 Rumo ao Campus UNIFEB · 📢 Buscando + passageiros`
+                      : `🎓 Em rota final para o Campus UNIFEB`
+                    : '⏳ Aguardando solicitação de passageiro'}
               </Text>
 
               {/* Resumo de paradas e passageiros embarcados */}
@@ -576,7 +585,7 @@ export default function MapScreen({ onLogout }) {
                 })()}
               </Text>
 
-              {souMotorista && !emergencia && (
+              {souMotorista && (
                 <TouchableOpacity style={s.simularBtn} onPress={avancarPassoNaRota}>
                   <Text style={s.simularBtnText}>🧭 Avançar na via</Text>
                 </TouchableOpacity>
@@ -584,7 +593,7 @@ export default function MapScreen({ onLogout }) {
             </View>
 
             {/* Botão "Passageiro Embarcou": visível para o motorista quando está a caminho do passageiro */}
-            {souMotorista && passageiroAtual && !emergencia && (
+            {souMotorista && passageiroAtual && (
               <TouchableOpacity
                 style={[s.btnEmbarcou, embarcando && { opacity: 0.6 }]}
                 disabled={embarcando}
@@ -614,30 +623,28 @@ export default function MapScreen({ onLogout }) {
                 <Text style={s.btnText}>💬 Mensagens</Text>
               </TouchableOpacity>
 
-              {!emergencia && (
-                <TouchableOpacity
+              <TouchableOpacity
+                style={[
+                  s.btn,
+                  podeFinalizar ? s.btnFinalizarHabilitado : s.btnFinalizarDesabilitado,
+                  { flex: 1.2 },
+                ]}
+                disabled={!podeFinalizar || finalizando}
+                onPress={finalizarCaronaNoCampus}
+              >
+                <Text
                   style={[
-                    s.btn,
-                    podeFinalizar ? s.btnFinalizarHabilitado : s.btnFinalizarDesabilitado,
-                    { flex: 1.2 },
+                    s.btnText,
+                    podeFinalizar ? { color: '#0B1020', fontWeight: '900' } : { color: colors.muted },
                   ]}
-                  disabled={!podeFinalizar || finalizando}
-                  onPress={finalizarCaronaNoCampus}
                 >
-                  <Text
-                    style={[
-                      s.btnText,
-                      podeFinalizar ? { color: '#0B1020', fontWeight: '900' } : { color: colors.muted },
-                    ]}
-                  >
-                    {finalizando
-                      ? 'Finalizando...'
-                      : podeFinalizar
-                        ? '🏁 Finalizar Carona'
-                        : '🔒 Finalizar Carona'}
-                  </Text>
-                </TouchableOpacity>
-              )}
+                  {finalizando
+                    ? 'Finalizando...'
+                    : podeFinalizar
+                      ? '🏁 Finalizar Carona'
+                      : '🔒 Finalizar Carona'}
+                </Text>
+              </TouchableOpacity>
             </View>
 
             {/* Caso a oferta ainda não tenha nenhum passageiro, permite cancelar oferta */}
@@ -738,7 +745,23 @@ export default function MapScreen({ onLogout }) {
         </View>
       </Modal>
 
-      <ChatModal visible={chat} onClose={() => setChat(false)} caronaId={carona?.id} meuId={meuId} />
+      <ChatModal
+        visible={chat}
+        onClose={() => setChat(false)}
+        caronaId={carona?.id}
+        meuId={meuId}
+        motoristaId={carona?.motorista_id}
+      />
+      {meuSosAtivo && carona?.sos_id && (
+        <SosChatModal
+          visible={chatSos}
+          onClose={() => setChatSos(false)}
+          sosId={carona.sos_id}
+          modo="USUARIO"
+          sosStatus={carona.sos_status}
+          agenteNome={carona.sos_agente_nome}
+        />
+      )}
       <CaronasListModal
         visible={lista}
         onClose={() => setLista(false)}
@@ -793,7 +816,46 @@ const s = StyleSheet.create({
     shadowRadius: 16,
     elevation: 12,
   },
-  sosText: { color: '#fff', fontWeight: '900', fontSize: 24, letterSpacing: 2 },
+  sosText: { color: '#fff', fontWeight: '900', fontSize: 22, letterSpacing: 1.5 },
+  sosTextAtivo: { color: colors.primary2, fontSize: 15, letterSpacing: 0.5 },
+  sosSubText: { color: '#fff', fontWeight: '800', fontSize: 10, marginTop: 1 },
+  sosSilenciosoAtivo: {
+    backgroundColor: 'rgba(18, 24, 51, 0.95)',
+    borderColor: colors.primary2,
+    borderWidth: 2.5,
+    shadowColor: colors.primary2,
+    shadowOpacity: 0.35,
+  },
+  sosSilenciosoBox: {
+    backgroundColor: 'rgba(0, 210, 211, 0.1)',
+    borderColor: 'rgba(0, 210, 211, 0.35)',
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+    marginBottom: 8,
+  },
+  sosSilenciosoTitulo: {
+    color: colors.primary2,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  sosSilenciosoDetalhe: {
+    color: colors.muted,
+    fontSize: 11,
+    marginTop: 1,
+  },
+  sosChatPill: {
+    backgroundColor: colors.primary2,
+    borderRadius: 8,
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+  },
+  sosChatPillText: {
+    color: '#0B1020',
+    fontSize: 11,
+    fontWeight: '900',
+  },
   panel: {
     position: 'absolute',
     bottom: 0,

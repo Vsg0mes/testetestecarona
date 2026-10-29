@@ -58,6 +58,38 @@ async function garantirSchemaSeguranca() {
     FROM caronas
     WHERE passageiro_id IS NOT NULL
     ON CONFLICT (carona_id, usuario_id) DO NOTHING;
+
+    ALTER TABLE eventos_sos ADD COLUMN IF NOT EXISTS acionado_por_papel VARCHAR(20);
+    UPDATE eventos_sos s
+    SET acionado_por_papel = CASE
+      WHEN s.usuario_id = c.motorista_id THEN 'MOTORISTA'
+      ELSE 'PASSAGEIRO'
+    END
+    FROM caronas c
+    WHERE c.id = s.carona_id
+      AND s.acionado_por_papel IS NULL;
+    UPDATE eventos_sos SET acionado_por_papel = 'PASSAGEIRO' WHERE acionado_por_papel IS NULL;
+    ALTER TABLE eventos_sos ALTER COLUMN acionado_por_papel SET DEFAULT 'PASSAGEIRO';
+    ALTER TABLE eventos_sos ALTER COLUMN acionado_por_papel SET NOT NULL;
+    ALTER TABLE eventos_sos DROP CONSTRAINT IF EXISTS chk_eventos_sos_papel;
+    ALTER TABLE eventos_sos ADD CONSTRAINT chk_eventos_sos_papel
+      CHECK (acionado_por_papel IN ('MOTORISTA', 'PASSAGEIRO'));
+    CREATE INDEX IF NOT EXISTS idx_eventos_sos_carona_usuario_abertos
+      ON eventos_sos (carona_id, usuario_id)
+      WHERE status IN ('ABERTO', 'EM_ATENDIMENTO');
+
+    CREATE TABLE IF NOT EXISTS sos_chat_mensagens (
+      id          BIGSERIAL PRIMARY KEY,
+      sos_id      BIGINT NOT NULL REFERENCES eventos_sos(id) ON DELETE CASCADE,
+      autor_tipo  VARCHAR(20) NOT NULL CHECK (autor_tipo IN ('USUARIO', 'AGENTE')),
+      usuario_id  INT REFERENCES usuarios(id) ON DELETE SET NULL,
+      agente_id   INT REFERENCES agentes_seguranca(id) ON DELETE SET NULL,
+      autor_nome  VARCHAR(120) NOT NULL,
+      texto       VARCHAR(500) NOT NULL,
+      enviado_em  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_sos_chat_mensagens_sos
+      ON sos_chat_mensagens (sos_id, enviado_em ASC, id ASC);
   `);
 }
 

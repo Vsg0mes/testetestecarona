@@ -11,6 +11,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import CampusMap from '../components/CampusMap';
+import SosChatModal from '../components/SosChatModal';
 import { segurancaApi, segurancaAuth, segErrMsg } from '../api/segurancaClient';
 import { notify, confirm } from '../ui/dialogs';
 import { colors } from '../theme';
@@ -55,6 +56,7 @@ export default function SegurancaPainelScreen({ agenteInicial, onLogout }) {
   const [aba, setAba] = useState('abertos'); // 'abertos' | 'todos'
   const [chamados, setChamados] = useState([]);
   const [selecionadoId, setSelecionadoId] = useState(null);
+  const [chatSosId, setChatSosId] = useState(null);
   const [carregando, setCarregando] = useState(true);
   const [acaoId, setAcaoId] = useState(null);
 
@@ -181,7 +183,8 @@ export default function SegurancaPainelScreen({ agenteInicial, onLogout }) {
       await segurancaApi.post(`/seguranca/sos/${item.id}/assumir`);
       setSelecionadoId(item.id);
       await carregarChamados();
-      notify('Chamado assumido 🛡️', `Você está em atendimento do SOS #${item.id} (Carona #${item.carona_id}).`);
+      // Abre automaticamente o chat privado direto com o solicitante do SOS
+      setChatSosId(item.id);
     } catch (e) {
       notify('Não foi possível assumir', segErrMsg(e));
       await carregarChamados();
@@ -221,22 +224,26 @@ export default function SegurancaPainelScreen({ agenteInicial, onLogout }) {
   const qtdEmAtendimento = chamados.filter((c) => c.status === 'EM_ATENDIMENTO').length;
   const alertaPiscando = (qtdAbertos > 0 || novoSosDestaque) && pisca;
 
-  // Coordenada do pino de SOS no mapa (com fallback para última posição ou origem da carona)
+  // Coordenada do pino de SOS no mapa (prioriza GPS ao vivo de quem acionou / motorista)
   const sosMapa = selecionado
     ? {
         id: selecionado.id,
         lat:
-          typeof selecionado.lat === 'number'
-            ? selecionado.lat
-            : typeof selecionado.motorista_lat === 'number'
-              ? selecionado.motorista_lat
-              : selecionado.origem_lat,
+          typeof selecionado.lat_ao_vivo === 'number'
+            ? selecionado.lat_ao_vivo
+            : typeof selecionado.lat === 'number'
+              ? selecionado.lat
+              : typeof selecionado.motorista_lat === 'number'
+                ? selecionado.motorista_lat
+                : selecionado.origem_lat,
         lng:
-          typeof selecionado.lng === 'number'
-            ? selecionado.lng
-            : typeof selecionado.motorista_lng === 'number'
-              ? selecionado.motorista_lng
-              : selecionado.origem_lng,
+          typeof selecionado.lng_ao_vivo === 'number'
+            ? selecionado.lng_ao_vivo
+            : typeof selecionado.lng === 'number'
+              ? selecionado.lng
+              : typeof selecionado.motorista_lng === 'number'
+                ? selecionado.motorista_lng
+                : selecionado.origem_lng,
         carro_placa: selecionado.carro_placa,
         status: selecionado.status,
       }
@@ -373,20 +380,22 @@ export default function SegurancaPainelScreen({ agenteInicial, onLogout }) {
                       </Text>
                     </View>
 
-                    {/* Envolvidos: Acionado por, Motorista e Passageiro */}
+                    {/* Envolvidos: Identificação clara de quem acionou (Motorista ou Passageiro) */}
                     <View style={s.infoBox}>
-                      <Text style={s.infoLine}>
-                        <Text style={s.infoKey}>Acionado por: </Text>
-                        <Text style={[s.infoVal, { color: colors.danger, fontWeight: '800' }]}>
-                          {item.acionado_por_nome}
-                        </Text>
+                      <Text style={[s.infoLine, { color: colors.danger, fontWeight: '900', marginBottom: 2 }]}>
+                        🚨{' '}
+                        {item.acionado_por_descricao ||
+                          (item.acionado_por_papel === 'MOTORISTA' ||
+                          Number(item.acionado_por_id) === Number(item.motorista_id)
+                            ? `SOS acionado pelo Motorista: ${item.acionado_por_nome}`
+                            : `SOS acionado por Passageiro: ${item.acionado_por_nome}`)}
                       </Text>
                       <Text style={s.infoLine}>
                         <Text style={s.infoKey}>🚗 Motorista: </Text>
                         <Text style={s.infoVal}>{item.motorista_nome}</Text>
                       </Text>
                       <Text style={s.infoLine}>
-                        <Text style={s.infoKey}>🧍 Passageiro: </Text>
+                        <Text style={s.infoKey}>🧍 Passageiro(s): </Text>
                         <Text style={s.infoVal}>{item.passageiro_nome || 'Sem passageiro'}</Text>
                       </Text>
                     </View>
@@ -406,10 +415,12 @@ export default function SegurancaPainelScreen({ agenteInicial, onLogout }) {
                     {/* Localização ao vivo */}
                     <View style={s.locRow}>
                       <Text style={s.locText}>
-                        📍 SOS:{' '}
-                        {typeof item.lat === 'number' && typeof item.lng === 'number'
-                          ? `${item.lat.toFixed(4)}, ${item.lng.toFixed(4)}`
-                          : 'Usando origem da carona'}
+                        📍 GPS:{' '}
+                        {typeof item.lat_ao_vivo === 'number' && typeof item.lng_ao_vivo === 'number'
+                          ? `${item.lat_ao_vivo.toFixed(4)}, ${item.lng_ao_vivo.toFixed(4)}`
+                          : typeof item.lat === 'number' && typeof item.lng === 'number'
+                            ? `${item.lat.toFixed(4)}, ${item.lng.toFixed(4)}`
+                            : 'Usando origem da carona'}
                       </Text>
                       <Text style={s.locVivo}>
                         {item.localizacoes?.length > 0
@@ -431,6 +442,19 @@ export default function SegurancaPainelScreen({ agenteInicial, onLogout }) {
                       </Text>
                     )}
 
+                    {/* Botão de Chat Privado com o Solicitante do SOS */}
+                    <TouchableOpacity
+                      style={s.btnChatSos}
+                      onPress={() => {
+                        setSelecionadoId(item.id);
+                        setChatSosId(item.id);
+                      }}
+                    >
+                      <Text style={s.btnChatSosText}>
+                        💬 Abrir Chat Direto com Solicitante (SOS)
+                      </Text>
+                    </TouchableOpacity>
+
                     {/* Botão: Assumir chamado */}
                     {item.status === 'ABERTO' && (
                       <TouchableOpacity
@@ -439,7 +463,7 @@ export default function SegurancaPainelScreen({ agenteInicial, onLogout }) {
                         onPress={() => assumirChamado(item)}
                       >
                         <Text style={s.btnAssumirText}>
-                          {acaoId === item.id ? 'Assumindo...' : '🛡️ Assumir chamado'}
+                          {acaoId === item.id ? 'Assumindo...' : '🛡️ Assumir Chamado e Atender SOS'}
                         </Text>
                       </TouchableOpacity>
                     )}
@@ -523,7 +547,11 @@ export default function SegurancaPainelScreen({ agenteInicial, onLogout }) {
             {selecionado ? (
               <>
                 <Text style={s.mapOverlayTitle}>
-                  📍 Monitorando SOS #{selecionado.id} · Carona #{selecionado.carona_id}
+                  📍 Monitorando SOS #{selecionado.id} ·{' '}
+                  {selecionado.acionado_por_descricao ||
+                    (selecionado.acionado_por_papel === 'MOTORISTA'
+                      ? `SOS acionado pelo Motorista: ${selecionado.acionado_por_nome}`
+                      : `SOS acionado por Passageiro: ${selecionado.acionado_por_nome}`)}
                 </Text>
                 <Text style={s.mapOverlaySub}>
                   🚗 {selecionado.motorista_nome} ({selecionado.carro_modelo || 'Veículo'} · Placa {selecionado.carro_placa || '---'}) · 🧍 {selecionado.passageiro_nome || 'Sem passageiro'}
@@ -537,6 +565,15 @@ export default function SegurancaPainelScreen({ agenteInicial, onLogout }) {
           </View>
         </View>
       </View>
+
+      {/* Modal de Chat Direto Privado (Segurança <-> Solicitante do SOS) */}
+      <SosChatModal
+        visible={Boolean(chatSosId)}
+        onClose={() => setChatSosId(null)}
+        sosId={chatSosId}
+        modo="AGENTE"
+        chamado={chamados.find((c) => c.id === chatSosId) || selecionado}
+      />
     </View>
   );
 }
@@ -737,6 +774,20 @@ const s = StyleSheet.create({
   locVivo: { color: colors.success, fontSize: 11, fontWeight: '700' },
   atendidoText: { color: colors.primary2, fontSize: 12, fontWeight: '700', marginTop: 4 },
   obsSalvaText: { color: colors.text, fontSize: 12, fontStyle: 'italic', marginTop: 4 },
+  btnChatSos: {
+    marginTop: 8,
+    backgroundColor: 'rgba(0, 210, 211, 0.16)',
+    borderWidth: 1,
+    borderColor: colors.primary2,
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  btnChatSosText: {
+    color: colors.primary2,
+    fontWeight: '800',
+    fontSize: 13,
+  },
   btnAssumir: {
     marginTop: 10,
     backgroundColor: colors.danger,

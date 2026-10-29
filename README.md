@@ -8,7 +8,7 @@ MVP desenvolvido para hackathon acadêmico da comunidade **UNIFEB (Barretos-SP)*
 - **Fluxo de Embarque e Reabertura de Vagas:** Botão *"Passageiro Embarcou"* na tela do motorista (`status = EMBARCADO`), seguido de verificação de `vagas_disponiveis` e prompt para republicar a carona pelo caminho sem interromper a rota atual (`POST /caronas/:id/embarcar` e `POST /caronas/:id/republicar`).
 - **Finalização Validada por Geofencing no Campus:** O botão *"Finalizar Carona"* permanece bloqueado/desabilitado durante todo o percurso e é habilitado automaticamente apenas quando a telemetria GPS do motorista entra no raio de `<= 500m` do Campus UNIFEB (`-20.5747, -48.5612`, validado via Haversine no backend).
 - **Comunidade fechada:** Acesso de motoristas e passageiros restrito ao domínio institucional `@unifeb.edu.br` (mock de SSO para o hackathon).
-- **Painel "Segurança do Campus" (`/seguranca`):** Central web em tempo real para agentes de segurança acompanharem chamados SOS com mapa ao vivo, dados do veículo/placa, alerta sonoro (`AudioContext`), assunção de chamado e encerramento transacional.
+- **SOS Silencioso / Unilateral + Painel "Segurança do Campus" (`/seguranca`):** Quando um passageiro aciona o SOS, o alerta é enviado exclusivamente para a Segurança do Campus e exibido de forma discreta apenas na tela de quem acionou (motorista e demais passageiros continuam em navegação normal sem saber do acionamento, e vice-versa quando o motorista aciona). Na central web `/seguranca`, os agentes visualizam claramente quem acionou (`"SOS acionado por Passageiro: ..."` ou `"SOS acionado pelo Motorista: ..."`), mapa GPS ao vivo, dados do veículo/placa, alerta sonoro (`AudioContext`), assunção de chamado e encerramento transacional.
 - **Separação rígida de papéis (RBAC no JWT):** Tokens de usuários comuns (`role: 'USUARIO'`) e tokens de agentes (`role: 'AGENTE'`) são estritamente isolados no middleware e no armazenamento do navegador (`carona_jwt` vs `seguranca_jwt`).
 
 ---
@@ -59,11 +59,13 @@ docker compose up --build -d
 - `GET /minha-carona` — Carona ativa do usuário + lista de paradas + `rota_ativa` + validação de geofence (`pode_finalizar`) + estado em tempo real do SOS (`sos_status`, `sos_agente_nome`).
 - `POST /caronas/:id/localizacao` / `GET /caronas/:id/localizacoes` — Telemetria GPS ao vivo com recálculo/encurtamento dinâmico da rota e verificação de entrada no geofence do campus (`<= 500m`).
 - `POST /caronas/:id/finalizar` — Finaliza a carona somente quando a telemetria GPS do motorista estiver dentro do raio de `500m` do Campus UNIFEB (validado via Haversine).
-- `POST /caronas/:id/sos` — Acionamento de SOS **idempotente** (passageiro ou motorista), com disparo opcional para webhook externo (`SOS_WEBHOOK_URL`).
+- `POST /caronas/:id/sos` — Acionamento de SOS **idempotente e silencioso/unilateral** (passageiro ou motorista), com disparo opcional para webhook externo (`SOS_WEBHOOK_URL`).
+- `GET /caronas/:id/mensagens` / `POST /caronas/:id/mensagens` — Chat coletivo da carona com identificação do remetente (`usuario_id`, `nome`) e destaque do motorista (`is_motorista`, `[MOTORISTA]`).
 
 ### Segurança do Campus (`/seguranca`)
 - `POST /seguranca/login` — Autenticação de agente (`scrypt` + `timingSafeEqual` + rate limit de 10 req/15min), retorna JWT de 8h (`role: 'AGENTE'`).
-- `GET /seguranca/sos?status=abertos|todos` — Lista chamados SOS com dados da carona, nomes, veículo/placa e última localização ao vivo em query única (sem N+1).
+- `GET /seguranca/sos?status=abertos|todos` — Lista chamados SOS com dados da carona, quem acionou (`MOTORISTA` ou `PASSAGEIRO`), veículo/placa e última localização ao vivo em query única (sem N+1).
 - `POST /seguranca/sos/:id/assumir` — Transição condicional `ABERTO` → `EM_ATENDIMENTO` (`409` se outro agente já assumiu).
+- `GET /seguranca/sos/:id/mensagens` / `POST /seguranca/sos/:id/mensagens` — Chat privado de emergência (Segurança ↔️ Vítima autora do SOS), com bloqueio estrito `403 Forbidden` para qualquer outro participante da carona.
 - `POST /seguranca/sos/:id/resolver` — Encerra o chamado (`RESOLVIDO` ou `FALSO_ALARME` + observação) exclusivamente pelo agente que assumiu (`403` caso contrário) e finaliza a carona na mesma transação.
 
