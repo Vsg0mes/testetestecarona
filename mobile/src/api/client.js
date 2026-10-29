@@ -5,10 +5,26 @@ import { storage } from './storage';
 
 const TOKEN_KEY = 'carona_jwt';
 
-// No navegador a API está na mesma máquina
-const baseURL = Platform.OS === 'web'
-  ? `http://${window.location.hostname}:3000`
-  : Constants.expoConfig?.extra?.apiUrl;
+// No navegador a API pode estar atrás de um proxy reverso (Nginx/ngrok HTTPS) ou na mesma máquina
+const getBaseURL = () => {
+  if (Platform.OS === 'web') {
+    if (typeof window !== 'undefined' && window.location) {
+      if (
+        window.location.protocol === 'https:' ||
+        window.location.hostname.includes('ngrok') ||
+        window.location.port === '8081' ||
+        window.location.port === ''
+      ) {
+        return '/api';
+      }
+      return `http://${window.location.hostname}:3000`;
+    }
+    return '/api';
+  }
+  return Constants.expoConfig?.extra?.apiUrl;
+};
+
+const baseURL = getBaseURL();
 
 export const api = axios.create({ baseURL, timeout: 10000 });
 
