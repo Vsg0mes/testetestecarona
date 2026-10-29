@@ -14,13 +14,16 @@ app.use(helmet());
 app.use(cors());
 app.use(express.json({ limit: '10kb' }));
 
-app.get('/health', async (_req, res) => {
+app.get(['/health', '/api/health'], async (_req, res) => {
   await db.query('SELECT 1');
   res.json({ ok: true });
 });
 
 app.use(require('./routes/auth'));               // público: POST /login
 app.use(requireAuth, require('./routes/caronas')); // protegido
+
+app.use('/api', require('./routes/auth'));
+app.use('/api', requireAuth, require('./routes/caronas'));
 
 // Express 5 propaga erros de handlers async automaticamente
 app.use((err, _req, res, _next) => {
