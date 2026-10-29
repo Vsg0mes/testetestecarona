@@ -35,9 +35,10 @@ CREATE TABLE caronas (
   origem_lng     DOUBLE PRECISION NOT NULL CHECK (origem_lng  BETWEEN -180 AND 180),
   destino_lat    DOUBLE PRECISION NOT NULL CHECK (destino_lat BETWEEN -90  AND 90),
   destino_lng    DOUBLE PRECISION NOT NULL CHECK (destino_lng BETWEEN -180 AND 180),
-  partida_em     TIMESTAMPTZ NOT NULL,
-  vagas          SMALLINT NOT NULL DEFAULT 1 CHECK (vagas BETWEEN 1 AND 6),
-  carro_modelo   VARCHAR(80),
+  partida_em        TIMESTAMPTZ NOT NULL,
+  vagas             SMALLINT NOT NULL DEFAULT 1 CHECK (vagas BETWEEN 1 AND 6),
+  vagas_disponiveis SMALLINT NOT NULL DEFAULT 1 CHECK (vagas_disponiveis BETWEEN 0 AND 6),
+  carro_modelo      VARCHAR(80),
   carro_ano      INT,
   carro_cor      VARCHAR(40),
   carro_placa    VARCHAR(20),
@@ -54,6 +55,22 @@ CREATE TABLE caronas (
     CHECK (passageiro_id IS NULL OR passageiro_id <> motorista_id)
 );
 CREATE INDEX idx_caronas_status ON caronas(status);
+
+-- ---------- Paradas / Passageiros da Carona (Fluxo de Embarque e Rota Dinâmica) ----------
+CREATE TABLE IF NOT EXISTS passageiros_carona (
+  id          SERIAL PRIMARY KEY,
+  carona_id   INT NOT NULL REFERENCES caronas(id) ON DELETE CASCADE,
+  usuario_id  INT NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+  status      VARCHAR(20) NOT NULL DEFAULT 'AGUARDANDO'
+              CHECK (status IN ('AGUARDANDO', 'EMBARCADO')),
+  lat         DOUBLE PRECISION CHECK (lat BETWEEN -90 AND 90),
+  lng         DOUBLE PRECISION CHECK (lng BETWEEN -180 AND 180),
+  criado_em   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  embarcou_em TIMESTAMPTZ,
+  UNIQUE (carona_id, usuario_id)
+);
+CREATE INDEX IF NOT EXISTS idx_passageiros_carona_carona
+  ON passageiros_carona (carona_id, id);
 
 -- ---------- Chat restrito (anti "Tinder") ----------
 -- Catálogo fixo: o único "texto" do chat vive aqui.

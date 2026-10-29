@@ -54,7 +54,8 @@ export default function CaronasListModal({ visible, onClose, campus, meuId, onEn
             renderItem={({ item }) => {
               const sentido = sentidoDe(item, campus);
               const minha = item.motorista_id === meuId;
-              const vagasTexto = item.vagas === 1 ? '1 lugar disponível' : `${item.vagas} lugares disponíveis`;
+              const vagasDisp = typeof item.vagas_disponiveis === 'number' ? item.vagas_disponiveis : item.vagas;
+              const vagasTexto = vagasDisp === 1 ? '1 lugar disponível' : `${vagasDisp} lugares disponíveis`;
 
               return (
                 <View style={s.card}>

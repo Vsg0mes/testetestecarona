@@ -1,5 +1,14 @@
-import { useCallback, useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Vibration, Platform } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  Vibration,
+  Platform,
+  Modal,
+  ActivityIndicator,
+} from 'react-native';
 import * as Location from 'expo-location';
 import CampusMap from '../components/CampusMap';
 import { notify, confirm } from '../ui/dialogs';
@@ -13,7 +22,7 @@ const CAMPUS_FALLBACK = { lat: -20.5747, lng: -48.5612, raio: 500 };
 
 export default function MapScreen({ onLogout }) {
   const [campus, setCampus] = useState(CAMPUS_FALLBACK);
-  const [localizacao, setLocalizacao] = useState(null); // localização REAL obtida via GPS
+  const [localizacao, setLocalizacao] = useState(null); // localização obtida via GPS (ou ponto no mapa em demo)
   const [permissaoGps, setPermissaoGps] = useState('checking'); // 'checking' | 'granted' | 'denied'
   const [buscandoGps, setBuscandoGps] = useState(false);
   const [erroGps, setErroGps] = useState('');
@@ -23,59 +32,131 @@ export default function MapScreen({ onLogout }) {
   const [lista, setLista] = useState(false);
   const [oferecendo, setOferecendo] = useState(false);
   const [pessoas, setPessoas] = useState([]);
-  const ativa = carona && ['EM_ANDAMENTO', 'EMERGENCIA'].includes(carona.status);
+  const [embarcando, setEmbarcando] = useState(false);
+  const [finalizando, setFinalizando] = useState(false);
+  const [modalReabertura, setModalReabertura] = useState(null); // { vagasDisponiveis, mensagem }
+  const [republicando, setRepublicando] = useState(false);
 
-  // ENVIO da minha posição durante a viagem 100% via GPS automático
-  //  - motorista: GPS contínuo (watchPosition), envia a cada mudança (mín. 1s entre envios)
-  //  - passageiro: posição pontual a cada 5s
-  const souMotorista = carona?.motorista_id === meuId;
+  // Quando o usuário move a posição manualmente no mapa (demo web), pausa sobrescrita automática do GPS fixo do PC
+  const overrideGpsAteRef = useRef(0);
+
+  const souMotorista = Boolean(carona && carona.motorista_id === meuId);
+  const ativa = Boolean(
+    carona && ['ABERTA', 'EM_ANDAMENTO', 'EMERGENCIA'].includes(carona.status)
+  );
+  const emPercurso = Boolean(
+    carona &&
+      (carona.status === 'EM_ANDAMENTO' ||
+        carona.status === 'EMERGENCIA' ||
+        (carona.passageiros && carona.passageiros.length > 0))
+  );
+
+  // Envia telemetria para POST /caronas/:id/localizacao e atualiza rota_ativa + validação de geofence em tempo real
+  const enviarTelemetria = useCallback(
+    async (pos, caronaIdAlvo) => {
+      const id = caronaIdAlvo || carona?.id;
+      if (!id || !pos || typeof pos.lat !== 'number' || typeof pos.lng !== 'number') return null;
+      try {
+        const { data } = await api.post(`/caronas/${id}/localizacao`, {
+          lat: pos.lat,
+          lng: pos.lng,
+        });
+        if (data && data.ok) {
+          setCarona((atual) => {
+            if (!atual || atual.id !== id) return atual;
+            return {
+              ...atual,
+              tem_telemetria_motorista:
+                atual.motorista_id === meuId ? true : atual.tem_telemetria_motorista,
+              motorista_lat: atual.motorista_id === meuId ? pos.lat : atual.motorista_lat,
+              motorista_lng: atual.motorista_id === meuId ? pos.lng : atual.motorista_lng,
+              distancia_campus_m:
+                typeof data.distancia_campus_m === 'number'
+                  ? data.distancia_campus_m
+                  : atual.distancia_campus_m,
+              motorista_no_campus: Boolean(data.motorista_no_campus),
+              pode_finalizar: Boolean(data.pode_finalizar),
+              rota_ativa: data.rota_ativa || atual.rota_ativa,
+            };
+          });
+        }
+        return data;
+      } catch {
+        return null;
+      }
+    },
+    [carona?.id, meuId]
+  );
+
+  // ENVIO da minha posição durante a viagem via GPS automático
   useEffect(() => {
-    if (!ativa) { setPessoas([]); return; }
-    const enviar = (pos) => api.post(`/caronas/${carona.id}/localizacao`, pos).catch(() => {});
+    if (!ativa || !carona?.id) {
+      setPessoas([]);
+      return;
+    }
 
     if (souMotorista) {
       let sub = null;
       let ultimo = 0;
       let cancelado = false;
       Location.watchPositionAsync(
-        { accuracy: Platform.OS === 'web' ? Location.Accuracy.Balanced : Location.Accuracy.High, timeInterval: 1000, distanceInterval: 3 },
+        {
+          accuracy: Platform.OS === 'web' ? Location.Accuracy.Balanced : Location.Accuracy.High,
+          timeInterval: 1000,
+          distanceInterval: 3,
+        },
         (g) => {
+          if (Date.now() < overrideGpsAteRef.current) return;
           const agora = Date.now();
           if (agora - ultimo < 1000) return;
           ultimo = agora;
-          enviar({ lat: g.coords.latitude, lng: g.coords.longitude });
+          const coords = { lat: g.coords.latitude, lng: g.coords.longitude };
+          setLocalizacao(coords);
+          enviarTelemetria(coords, carona.id);
         }
-      ).then((s) => { if (cancelado) s.remove(); else sub = s; }).catch(() => {});
-      return () => { cancelado = true; sub?.remove(); };
+      )
+        .then((s) => {
+          if (cancelado) s.remove();
+          else sub = s;
+        })
+        .catch(() => {});
+      return () => {
+        cancelado = true;
+        sub?.remove();
+      };
     }
 
     async function pontual() {
+      if (Date.now() < overrideGpsAteRef.current) return;
       try {
         const g = await Location.getCurrentPositionAsync({});
-        enviar({ lat: g.coords.latitude, lng: g.coords.longitude });
+        const coords = { lat: g.coords.latitude, lng: g.coords.longitude };
+        setLocalizacao(coords);
+        enviarTelemetria(coords, carona.id);
       } catch {}
     }
     pontual();
     const t = setInterval(pontual, 5000);
     return () => clearInterval(t);
-  }, [ativa, carona?.id, souMotorista]);
+  }, [ativa, carona?.id, souMotorista, enviarTelemetria]);
 
-  // LEITURA das posições (a do motorista chega quase em tempo real: polling de 2s)
-  useEffect(() => {
-    if (!ativa) return;
-    let vivo = true;
-    async function ler() {
-      try {
-        const { data } = await api.get(`/caronas/${carona.id}/localizacoes`);
-        if (vivo) setPessoas(data.map((u) => ({ ...u, eu: u.usuario_id === meuId })));
-      } catch {}
-    }
-    ler();
-    const t = setInterval(ler, 2000);
-    return () => { vivo = false; clearInterval(t); };
+  // LEITURA das posições (polling de 2s)
+  const lerLocalizacoes = useCallback(async () => {
+    if (!ativa || !carona?.id) return;
+    try {
+      const { data } = await api.get(`/caronas/${carona.id}/localizacoes`);
+      setPessoas(data.map((u) => ({ ...u, eu: u.usuario_id === meuId })));
+    } catch {}
   }, [ativa, carona?.id, meuId]);
 
-  // Restaura carona ativa e descobre o id do usuário (vale p/ motorista e passageiro)
+  useEffect(() => {
+    if (!ativa || !carona?.id) return;
+    lerLocalizacoes();
+    const t = setInterval(lerLocalizacoes, 2000);
+    return () => clearInterval(t);
+  }, [ativa, carona?.id, lerLocalizacoes]);
+
+  // Restaura carona ativa, paradas, rota_ativa e validação de geofence
   const sincronizar = useCallback(async () => {
     try {
       const { data } = await api.get('/minha-carona');
@@ -86,28 +167,160 @@ export default function MapScreen({ onLogout }) {
 
   useEffect(() => {
     sincronizar();
-    const t = setInterval(sincronizar, 3000); // atualiza carona e status do SOS (assumido/resolvido)
+    const t = setInterval(sincronizar, 3000);
     return () => clearInterval(t);
   }, [sincronizar]);
 
   async function entrar(c) {
     if (carona) return notify('Você já tem uma carona ativa', 'Encerre a atual antes de entrar em outra.');
     try {
-      await api.post(`/caronas/${c.id}/entrar`);
+      const payload =
+        localizacao && typeof localizacao.lat === 'number' && typeof localizacao.lng === 'number'
+          ? { lat: localizacao.lat, lng: localizacao.lng }
+          : {};
+      const { data } = await api.post(`/caronas/${c.id}/entrar`, payload);
+      setCarona(data);
       setLista(false);
       await sincronizar();
-      notify('Você entrou na carona ✅', `Motorista: ${c.motorista_nome}. Use o 💬 para avisar.`);
+      notify('Você entrou na carona ✅', `Motorista: ${c.motorista_nome}. Aguarde o embarque no ponto.`);
     } catch (e) {
       notify('Não foi possível entrar', errMsg(e));
     }
   }
 
-  function encerrar() {
-    confirm('Encerrar carona?', carona.status === 'ABERTA' ? 'A oferta será cancelada.' : 'A viagem será finalizada.',
-      'ENCERRAR', async () => {
-        try { await api.post(`/caronas/${carona.id}/finalizar`); setCarona(null); }
-        catch (e) { notify('Erro', errMsg(e)); }
+  // Clique no mapa:
+  // - Sem carona ativa: define/ajusta ponto de origem
+  // - Com carona ativa: atualiza telemetria GPS em tempo real via POST /caronas/:id/localizacao
+  async function handleMapPick(coords) {
+    if (!coords || typeof coords.lat !== 'number' || typeof coords.lng !== 'number') return;
+    overrideGpsAteRef.current = Date.now() + 120000;
+    setLocalizacao(coords);
+    setPermissaoGps('granted');
+    setErroGps('');
+    if (ativa && carona?.id) {
+      await enviarTelemetria(coords, carona.id);
+      await lerLocalizacoes();
+    }
+  }
+
+  // Avança um passo ao longo da polilinha da rota ativa (útil para demonstrar encurtamento de rota nas vias)
+  async function avancarPassoNaRota() {
+    if (!carona?.id || !carona?.rota_ativa) return;
+    const geom = carona.rota_ativa.geometria;
+    const dest = carona.rota_ativa.destino;
+    let proximoPonto = null;
+
+    if (Array.isArray(geom) && geom.length >= 2) {
+      // Avança ~25% dos pontos restantes da via ou direto ao destino se estiver perto
+      const idx = geom.length <= 4 ? geom.length - 1 : Math.min(geom.length - 1, Math.max(2, Math.floor(geom.length * 0.35)));
+      proximoPonto = { lat: geom[idx][0], lng: geom[idx][1] };
+    } else if (dest) {
+      proximoPonto = { lat: dest.lat, lng: dest.lng };
+    }
+
+    if (proximoPonto) {
+      overrideGpsAteRef.current = Date.now() + 120000;
+      setLocalizacao(proximoPonto);
+      await enviarTelemetria(proximoPonto, carona.id);
+      await lerLocalizacoes();
+    }
+  }
+
+  // Fluxo 2: Motorista confirma "Passageiro Embarcou"
+  async function confirmarEmbarquePassageiro() {
+    if (!carona?.id || embarcando) return;
+    setEmbarcando(true);
+    try {
+      const { data } = await api.post(`/caronas/${carona.id}/embarcar`);
+      setCarona(data);
+      await lerLocalizacoes();
+
+      const vagasRestantes =
+        typeof data.vagas_disponiveis === 'number' ? data.vagas_disponiveis : 0;
+
+      // Logo após confirmar o embarque, verifica vagas_disponiveis e exibe o prompt se ainda houver vagas
+      if (vagasRestantes > 0) {
+        const msg =
+          data.mensagem_reabertura ||
+          `Você ainda tem ${vagasRestantes} vaga(s) disponível(is). Deseja republicar a carona para encontrar outros passageiros pelo caminho?`;
+        setModalReabertura({
+          caronaId: data.id,
+          vagasDisponiveis: vagasRestantes,
+          mensagem: msg,
+        });
+      } else {
+        notify(
+          'Passageiro embarcado ✅',
+          'Todos os assentos foram preenchidos. Rota atualizada para o Campus UNIFEB!'
+        );
+      }
+    } catch (e) {
+      notify('Erro ao registrar embarque', errMsg(e));
+    } finally {
+      setEmbarcando(false);
+    }
+  }
+
+  // Motorista aceita republicar a carona para encontrar novos passageiros pelo caminho
+  async function aceitarRepublicarCarona() {
+    const id = modalReabertura?.caronaId || carona?.id;
+    if (!id || republicando) return;
+    setRepublicando(true);
+    try {
+      const { data } = await api.post(`/caronas/${id}/republicar`);
+      setCarona(data);
+      setModalReabertura(null);
+      notify(
+        'Carona republicada 📢',
+        `Sua carona está visível novamente com ${data.vagas_disponiveis} vaga(s) disponível(is) sem interromper sua rota atual.`
+      );
+    } catch (e) {
+      notify('Não foi possível republicar', errMsg(e));
+    } finally {
+      setRepublicando(false);
+    }
+  }
+
+  // Fluxo 3: Finalizar Carona (habilitado apenas quando dentro do geofence <= 500m do Campus UNIFEB)
+  async function finalizarCaronaNoCampus() {
+    if (!carona?.id || finalizando) return;
+    if (!carona.pode_finalizar) {
+      return notify(
+        'Fora do Campus UNIFEB',
+        'A finalização só é habilitada quando o GPS do motorista entra no raio de 500m do Campus UNIFEB (-20.5747, -48.5612).'
+      );
+    }
+    setFinalizando(true);
+    try {
+      await api.post(`/caronas/${carona.id}/finalizar`, {
+        lat: carona.motorista_lat,
+        lng: carona.motorista_lng,
       });
+      setCarona(null);
+      setPessoas([]);
+      notify('Carona finalizada ✅', 'Chegada ao Campus UNIFEB validada por geofencing com sucesso!');
+    } catch (e) {
+      notify('Não foi possível finalizar', errMsg(e));
+    } finally {
+      setFinalizando(false);
+    }
+  }
+
+  function cancelarOfertaSemPassageiros() {
+    if (!carona?.id) return;
+    confirm(
+      'Cancelar oferta de carona?',
+      'Nenhum passageiro embarcou ainda. A oferta será cancelada.',
+      'CANCELAR OFERTA',
+      async () => {
+        try {
+          await api.post(`/caronas/${carona.id}/finalizar`);
+          setCarona(null);
+        } catch (e) {
+          notify('Erro', errMsg(e));
+        }
+      }
+    );
   }
 
   const obterLocalizacaoGPS = useCallback(async (manual = false) => {
@@ -117,7 +330,7 @@ export default function MapScreen({ onLogout }) {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
         setPermissaoGps('denied');
-        setErroGps('Permissão de GPS negada.');
+        setErroGps('Permissão de GPS negada. Você também pode tocar no mapa para definir sua posição.');
         if (manual) {
           notify(
             'GPS Obrigatório',
@@ -135,7 +348,7 @@ export default function MapScreen({ onLogout }) {
       return coords;
     } catch (e) {
       console.warn('Erro ao obter GPS:', e);
-      setErroGps('Não foi possível obter sua localização atual via GPS.');
+      setErroGps('Não foi possível obter sua localização via satélite. Toque no mapa ou tente novamente.');
       if (manual) {
         notify('Erro de GPS', 'Verifique se o serviço de localização do dispositivo está ativado.');
       }
@@ -158,7 +371,7 @@ export default function MapScreen({ onLogout }) {
     if (!loc) {
       return notify(
         'GPS Obrigatório',
-        'Não foi possível obter sua localização exata. Permita o acesso ao GPS do seu dispositivo para continuar.'
+        'Não foi possível obter sua localização exata. Permita o acesso ao GPS ou toque no mapa para indicar sua posição.'
       );
     }
     setOferecendo(true);
@@ -176,6 +389,7 @@ export default function MapScreen({ onLogout }) {
         partidaEm,
         horarioPartida,
         vagas,
+        vagas_disponiveis: vagas,
         carroModelo: modelo,
         carroAno: ano,
         carroCor: cor,
@@ -183,8 +397,16 @@ export default function MapScreen({ onLogout }) {
       });
       setCarona(data);
       setMeuId(data.motorista_id);
-      const horaTexto = new Date(data.partida_em).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      notify('Carona criada ✅', `#${data.id} (${modelo}${ano ? ` ${ano}` : ''}, ${vagas} ${vagas === 1 ? 'vaga' : 'vagas'}, saída às ${horaTexto}) publicada.`);
+      // Envia a telemetria inicial do motorista
+      enviarTelemetria(localizacao, data.id);
+      const horaTexto = new Date(data.partida_em).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      notify(
+        'Carona criada ✅',
+        `#${data.id} (${modelo}${ano ? ` ${ano}` : ''}, ${vagas} ${vagas === 1 ? 'vaga' : 'vagas'}, saída às ${horaTexto}) publicada.`
+      );
     } catch (e) {
       notify('🚫 Bloqueado', errMsg(e));
       throw e;
@@ -213,6 +435,18 @@ export default function MapScreen({ onLogout }) {
   }
 
   const emergencia = carona?.status === 'EMERGENCIA';
+  const passageiroAtual = carona?.passageiro_atual || carona?.paradas?.[0] || null;
+  const embarcados = carona?.passageiros_embarcados || [];
+  const paradasPendentes = carona?.paradas || [];
+  const vagasDisponiveis =
+    typeof carona?.vagas_disponiveis === 'number' ? carona.vagas_disponiveis : carona?.vagas ?? 0;
+  const podeFinalizar = Boolean(carona?.pode_finalizar);
+  const rotaParaMapa = carona
+    ? carona.rota_ativa || {
+        origem: { lat: carona.origem_lat, lng: carona.origem_lng },
+        destino: { lat: carona.destino_lat, lng: carona.destino_lng },
+      }
+    : null;
 
   return (
     <View style={s.root}>
@@ -220,24 +454,28 @@ export default function MapScreen({ onLogout }) {
         campus={campus}
         ponto={carona ? null : localizacao}
         sentido="IDA"
-        onPick={null}
-        rota={carona && {
-          origem: { lat: carona.origem_lat, lng: carona.origem_lng },
-          destino: { lat: carona.destino_lat, lng: carona.destino_lng },
-        }}
+        onPick={handleMapPick}
+        rota={rotaParaMapa}
         pessoas={pessoas}
-        sos={emergencia ? {
-          id: carona.sos_id || carona.id,
-          lat: typeof carona.sos_lat === 'number' ? carona.sos_lat : carona.origem_lat,
-          lng: typeof carona.sos_lng === 'number' ? carona.sos_lng : carona.origem_lng,
-          carro_placa: carona.carro_placa,
-        } : null}
+        paradas={paradasPendentes}
+        sos={
+          emergencia
+            ? {
+                id: carona.sos_id || carona.id,
+                lat: typeof carona.sos_lat === 'number' ? carona.sos_lat : carona.origem_lat,
+                lng: typeof carona.sos_lng === 'number' ? carona.sos_lng : carona.origem_lng,
+                carro_placa: carona.carro_placa,
+              }
+            : null
+        }
       />
 
       {/* Header */}
       <View style={s.header}>
         <Text style={s.brand}>Carona Universitária</Text>
-        <TouchableOpacity onPress={onLogout}><Text style={{ color: colors.muted }}>Sair</Text></TouchableOpacity>
+        <TouchableOpacity onPress={onLogout}>
+          <Text style={{ color: colors.muted }}>Sair</Text>
+        </TouchableOpacity>
       </View>
 
       {/* SOS em destaque */}
@@ -250,7 +488,7 @@ export default function MapScreen({ onLogout }) {
         <Text style={s.sosText}>SOS</Text>
       </TouchableOpacity>
 
-      {/* Painel: carona ativa OU formulário travado */}
+      {/* Painel inferior */}
       <View style={s.panel}>
         {emergencia && (
           <View style={s.sosStatusBox}>
@@ -265,64 +503,161 @@ export default function MapScreen({ onLogout }) {
 
         {carona ? (
           <View>
+            {/* Status principal da carona e rota ativa */}
             <View style={s.campo}>
-              <Text style={s.campoLabel}>
-                {carona.motorista_id === meuId ? 'Você é o motorista' : 'Você é o passageiro'} · #{carona.id}
-              </Text>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text style={s.campoLabel}>
+                  {souMotorista ? 'Você é o motorista' : 'Você é o passageiro'} · #{carona.id}
+                </Text>
+                <Text style={s.vagasBadge}>
+                  💺 {vagasDisponiveis}/{carona.vagas} vaga(s) livre(s)
+                </Text>
+              </View>
+
               <Text style={s.campoValor}>
-                {carona.status === 'ABERTA' ? '⏳ Aguardando passageiro'
-                  : carona.status === 'EM_ANDAMENTO'
-                    ? `🚗 Em andamento · ${carona.motorista_id === meuId ? `Passageiro: ${carona.passageiro_nome}` : `Motorista: ${carona.motorista_nome}`}`
-                    : '🚨 Emergência acionada'}
+                {emergencia
+                  ? '🚨 Emergência acionada'
+                  : passageiroAtual
+                    ? `🚗 A caminho de ${passageiroAtual.nome} (Parada de coleta)`
+                    : embarcados.length > 0
+                      ? carona.status === 'ABERTA'
+                        ? `🎓 Rumo ao Campus UNIFEB · 📢 Buscando + passageiros`
+                        : `🎓 Em rota final para o Campus UNIFEB`
+                      : '⏳ Aguardando solicitação de passageiro'}
               </Text>
+
+              {/* Resumo de paradas e passageiros embarcados */}
+              {(paradasPendentes.length > 0 || embarcados.length > 0) && (
+                <View style={s.paradasResumo}>
+                  {paradasPendentes.map((p, idx) => (
+                    <Text key={`pend-${p.usuario_id}`} style={s.paradaItemPendente}>
+                      📍 {idx + 1}ª Parada: {p.nome} ({p.status})
+                    </Text>
+                  ))}
+                  {embarcados.map((p) => (
+                    <Text key={`emb-${p.usuario_id}`} style={s.paradaItemEmbarcado}>
+                      ✅ {p.nome}: {p.status}
+                    </Text>
+                  ))}
+                </View>
+              )}
             </View>
+
+            {/* Dados do veículo */}
             {(carona.carro_modelo || carona.carro_placa) && (
               <View style={[s.campo, { backgroundColor: 'rgba(11,16,32,0.8)' }]}>
                 <Text style={s.campoLabel}>
-                  {carona.motorista_id === meuId ? 'Seu Veículo Cadastrado' : 'Veículo do Motorista'}
+                  {souMotorista ? 'Seu Veículo Cadastrado' : 'Veículo do Motorista'}
                 </Text>
                 <Text style={s.campoValor}>
-                  🚗 {carona.carro_modelo || 'Veículo'} {carona.carro_ano ? `(${carona.carro_ano})` : ''} {carona.carro_cor ? `· ${carona.carro_cor}` : ''}
+                  🚗 {carona.carro_modelo || 'Veículo'} {carona.carro_ano ? `(${carona.carro_ano})` : ''}{' '}
+                  {carona.carro_cor ? `· ${carona.carro_cor}` : ''}
                 </Text>
                 <Text style={[s.dica, { color: colors.primary2, marginTop: 4, fontWeight: '700' }]}>
-                  Placa: {carona.carro_placa || '---'} · 💺 {carona.vagas} {carona.vagas === 1 ? 'lugar' : 'lugares'} · 🕒 Saída: {new Date(carona.partida_em).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  Placa: {carona.carro_placa || '---'} · 💺 {vagasDisponiveis}{' '}
+                  {vagasDisponiveis === 1 ? 'vaga livre' : 'vagas livres'} · 🕒 Saída:{' '}
+                  {new Date(carona.partida_em).toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
                 </Text>
               </View>
             )}
-            {ativa && (
+
+            {/* Indicador de telemetria GPS + distância ao geofence do Campus UNIFEB */}
+            <View style={s.telemetriaRow}>
               <Text style={s.dica}>
                 {(() => {
                   const m = pessoas.find((u) => u.papel === 'MOTORISTA');
-                  if (!m) return '⚪ Aguardando sinal do motorista…';
-                  const seg = Math.max(0, Math.round((Date.now() - new Date(m.atualizado_em)) / 1000));
-                  return seg <= 10 ? `🟢 Motorista ao vivo (há ${seg}s)` : `🟠 Último sinal do motorista há ${seg}s`;
+                  if (!m && !carona.tem_telemetria_motorista) return '⚪ Aguardando sinal GPS do motorista…';
+                  return podeFinalizar
+                    ? `🟢 Dentro do Campus UNIFEB (${carona.distancia_campus_m ?? 0}m ≤ 500m)`
+                    : `📡 GPS ativo · Distância ao Campus: ${carona.distancia_campus_m ?? '--'}m`;
                 })()}
-                {'  ·  localização automática via GPS'}
               </Text>
-            )}
-            <View style={{ flexDirection: 'row', gap: 10, marginTop: 8 }}>
-              <TouchableOpacity style={[s.btn, { flex: 1 }, carona.status === 'ABERTA' && { opacity: 0.4 }]}
-                disabled={carona.status === 'ABERTA'} onPress={() => setChat(true)}>
-                <Text style={s.btnText}>💬 Mensagens</Text>
-              </TouchableOpacity>
-              {!emergencia && (
-                <TouchableOpacity style={[s.btn, s.btnGhost]} onPress={encerrar}>
-                  <Text style={s.btnText}>Encerrar</Text>
+
+              {souMotorista && !emergencia && (
+                <TouchableOpacity style={s.simularBtn} onPress={avancarPassoNaRota}>
+                  <Text style={s.simularBtnText}>🧭 Avançar na via</Text>
                 </TouchableOpacity>
               )}
             </View>
+
+            {/* Botão "Passageiro Embarcou": visível para o motorista quando está a caminho do passageiro */}
+            {souMotorista && passageiroAtual && !emergencia && (
+              <TouchableOpacity
+                style={[s.btnEmbarcou, embarcando && { opacity: 0.6 }]}
+                disabled={embarcando}
+                onPress={confirmarEmbarquePassageiro}
+              >
+                {embarcando ? (
+                  <ActivityIndicator color="#0B1020" />
+                ) : (
+                  <Text style={s.btnEmbarcouText}>
+                    ✅ Passageiro Embarcou ({passageiroAtual.nome})
+                  </Text>
+                )}
+              </TouchableOpacity>
+            )}
+
+            {/* Ações principais: Chat e Finalizar Carona (validado por Geofencing no Campus) */}
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 8 }}>
+              <TouchableOpacity
+                style={[
+                  s.btn,
+                  { flex: 1 },
+                  !emPercurso && carona.status === 'ABERTA' && { opacity: 0.4 },
+                ]}
+                disabled={!emPercurso && carona.status === 'ABERTA'}
+                onPress={() => setChat(true)}
+              >
+                <Text style={s.btnText}>💬 Mensagens</Text>
+              </TouchableOpacity>
+
+              {!emergencia && (
+                <TouchableOpacity
+                  style={[
+                    s.btn,
+                    podeFinalizar ? s.btnFinalizarHabilitado : s.btnFinalizarDesabilitado,
+                    { flex: 1.2 },
+                  ]}
+                  disabled={!podeFinalizar || finalizando}
+                  onPress={finalizarCaronaNoCampus}
+                >
+                  <Text
+                    style={[
+                      s.btnText,
+                      podeFinalizar ? { color: '#0B1020', fontWeight: '900' } : { color: colors.muted },
+                    ]}
+                  >
+                    {finalizando
+                      ? 'Finalizando...'
+                      : podeFinalizar
+                        ? '🏁 Finalizar Carona'
+                        : '🔒 Finalizar Carona'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Caso a oferta ainda não tenha nenhum passageiro, permite cancelar oferta */}
+            {souMotorista && carona.status === 'ABERTA' && !emPercurso && (
+              <TouchableOpacity style={s.cancelarOfertaLink} onPress={cancelarOfertaSemPassageiros}>
+                <Text style={s.cancelarOfertaText}>Cancelar oferta de carona</Text>
+              </TouchableOpacity>
+            )}
           </View>
         ) : (
           <View>
             {permissaoGps === 'denied' && (
               <TouchableOpacity style={s.alertaGps} onPress={() => obterLocalizacaoGPS(true)}>
                 <Text style={s.alertaGpsText}>
-                  ⚠️ Localização bloqueada. Toque aqui para permitir o GPS.
+                  ⚠️ Localização bloqueada. Toque aqui para permitir o GPS ou toque no mapa.
                 </Text>
               </TouchableOpacity>
             )}
 
-            {/* Origem: travada na localização real do usuário via GPS */}
+            {/* Origem: localização real do usuário via GPS */}
             <View style={s.campo}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Text style={s.campoLabel}>Origem (Sua Localização GPS Real)</Text>
@@ -337,16 +672,14 @@ export default function MapScreen({ onLogout }) {
                   ? `📍 ${localizacao.lat.toFixed(4)}, ${localizacao.lng.toFixed(4)} (GPS Validado)`
                   : buscandoGps
                     ? '📡 Conectando ao GPS do dispositivo...'
-                    : '⚠️ Toque em "Atualizar GPS" para localizar'}
+                    : '⚠️ Toque em "Atualizar GPS" ou no mapa para localizar'}
               </Text>
             </View>
 
             {/* Destino: travado no campus */}
             <View style={s.campo}>
               <Text style={s.campoLabel}>Destino (Fixo)</Text>
-              <Text style={s.campoValor}>
-                🔒 Campus UNIFEB (Travado)
-              </Text>
+              <Text style={s.campoValor}>🔒 Campus UNIFEB (Travado)</Text>
             </View>
 
             <View style={{ flexDirection: 'row', gap: 10, marginTop: 8 }}>
@@ -356,7 +689,10 @@ export default function MapScreen({ onLogout }) {
               >
                 <Text style={s.btnText}>Oferecer carona</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[s.btn, s.btnGhost, { flex: 1 }]} onPress={() => setLista(true)}>
+              <TouchableOpacity
+                style={[s.btn, s.btnGhost, { flex: 1 }]}
+                onPress={() => setLista(true)}
+              >
                 <Text style={s.btnText}>🔎 Buscar carona</Text>
               </TouchableOpacity>
             </View>
@@ -364,8 +700,52 @@ export default function MapScreen({ onLogout }) {
         )}
       </View>
 
+      {/* Modal/Prompt de Reabertura de Vagas após embarque */}
+      <Modal
+        visible={Boolean(modalReabertura)}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setModalReabertura(null)}
+      >
+        <View style={s.modalBackdrop}>
+          <View style={s.modalCard}>
+            <Text style={s.modalTitle}>💺 Vagas Disponíveis na Carona</Text>
+            <Text style={s.modalMensagem}>
+              {modalReabertura?.mensagem ||
+                `Você ainda tem ${modalReabertura?.vagasDisponiveis ?? 1} vaga(s) disponível(is). Deseja republicar a carona para encontrar outros passageiros pelo caminho?`}
+            </Text>
+
+            <View style={s.modalBotoes}>
+              <TouchableOpacity
+                style={[s.modalBtnSecundario, { flex: 1 }]}
+                disabled={republicando}
+                onPress={() => setModalReabertura(null)}
+              >
+                <Text style={s.modalBtnSecundarioText}>Não, seguir rota</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[s.modalBtnPrimario, { flex: 1.3 }, republicando && { opacity: 0.6 }]}
+                disabled={republicando}
+                onPress={aceitarRepublicarCarona}
+              >
+                <Text style={s.modalBtnPrimarioText}>
+                  {republicando ? 'Republicando...' : 'Sim, republicar'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       <ChatModal visible={chat} onClose={() => setChat(false)} caronaId={carona?.id} meuId={meuId} />
-      <CaronasListModal visible={lista} onClose={() => setLista(false)} campus={campus} meuId={meuId} onEntrar={entrar} />
+      <CaronasListModal
+        visible={lista}
+        onClose={() => setLista(false)}
+        campus={campus}
+        meuId={meuId}
+        onEntrar={entrar}
+      />
       <OferecerCaronaModal
         visible={oferecendo}
         onClose={() => setOferecendo(false)}
@@ -380,23 +760,56 @@ export default function MapScreen({ onLogout }) {
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
   header: {
-    position: 'absolute', top: 50, left: 16, right: 16, zIndex: 10, flexDirection: 'row', justifyContent: 'space-between',
-    alignItems: 'center', backgroundColor: 'rgba(11,16,32,0.85)', padding: 14, borderRadius: 16,
-    borderWidth: 1, borderColor: colors.border,
+    position: 'absolute',
+    top: 50,
+    left: 16,
+    right: 16,
+    zIndex: 10,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: 'rgba(11,16,32,0.85)',
+    padding: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   brand: { color: colors.text, fontWeight: '800', fontSize: 16 },
   sos: {
-    position: 'absolute', right: 20, top: 120, zIndex: 11, width: 84, height: 84, borderRadius: 42,
-    backgroundColor: colors.danger, alignItems: 'center', justifyContent: 'center',
-    borderWidth: 4, borderColor: 'rgba(255,255,255,0.35)',
-    shadowColor: colors.danger, shadowOpacity: 0.8, shadowRadius: 16, elevation: 12,
+    position: 'absolute',
+    right: 20,
+    top: 120,
+    zIndex: 11,
+    width: 84,
+    height: 84,
+    borderRadius: 42,
+    backgroundColor: colors.danger,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 4,
+    borderColor: 'rgba(255,255,255,0.35)',
+    shadowColor: colors.danger,
+    shadowOpacity: 0.8,
+    shadowRadius: 16,
+    elevation: 12,
   },
   sosText: { color: '#fff', fontWeight: '900', fontSize: 24, letterSpacing: 2 },
   panel: {
-    position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 10, padding: 20, paddingBottom: 36,
-    width: '100%', maxWidth: 480, marginHorizontal: 'auto',
-    backgroundColor: 'rgba(18,24,51,0.96)', borderTopLeftRadius: 28, borderTopRightRadius: 28,
-    borderWidth: 1, borderColor: colors.border,
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    zIndex: 10,
+    padding: 20,
+    paddingBottom: 32,
+    width: '100%',
+    maxWidth: 480,
+    marginHorizontal: 'auto',
+    backgroundColor: 'rgba(18,24,51,0.96)',
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   alerta: { color: colors.danger, fontWeight: '800', textAlign: 'center', marginBottom: 4 },
   sosStatusBox: {
@@ -432,14 +845,158 @@ const s = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-  dica: { color: colors.muted, fontSize: 11, marginTop: 2 },
+  dica: { color: colors.muted, fontSize: 11, marginTop: 2, flex: 1 },
   campo: {
-    backgroundColor: colors.card, borderRadius: 12, padding: 12, marginBottom: 8,
-    borderWidth: 1, borderColor: colors.border,
+    backgroundColor: colors.card,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   campoLabel: { color: colors.muted, fontSize: 11, textTransform: 'uppercase' },
-  campoValor: { color: colors.text, fontSize: 15, marginTop: 2 },
-  btn: { backgroundColor: colors.primary, borderRadius: 14, paddingVertical: 15, paddingHorizontal: 18, alignItems: 'center' },
+  campoValor: { color: colors.text, fontSize: 15, marginTop: 2, fontWeight: '600' },
+  vagasBadge: {
+    color: colors.primary2,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  paradasResumo: {
+    marginTop: 8,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.08)',
+    gap: 3,
+  },
+  paradaItemPendente: {
+    color: colors.primary2,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  paradaItemEmbarcado: {
+    color: colors.success,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  telemetriaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 2,
+    marginBottom: 4,
+    gap: 8,
+  },
+  simularBtn: {
+    backgroundColor: 'rgba(0, 210, 211, 0.16)',
+    borderWidth: 1,
+    borderColor: colors.primary2,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  simularBtnText: {
+    color: colors.primary2,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  btnEmbarcou: {
+    backgroundColor: colors.success,
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    marginTop: 6,
+  },
+  btnEmbarcouText: {
+    color: '#0B1020',
+    fontWeight: '900',
+    fontSize: 15,
+  },
+  btn: {
+    backgroundColor: colors.primary,
+    borderRadius: 14,
+    paddingVertical: 15,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   btnGhost: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border },
-  btnText: { color: '#fff', fontWeight: '700', fontSize: 16 },
+  btnFinalizarHabilitado: {
+    backgroundColor: colors.success,
+    borderWidth: 1,
+    borderColor: colors.success,
+  },
+  btnFinalizarDesabilitado: {
+    backgroundColor: 'rgba(22, 31, 61, 0.5)',
+    borderWidth: 1,
+    borderColor: colors.border,
+    opacity: 0.45,
+  },
+  btnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  cancelarOfertaLink: {
+    alignSelf: 'center',
+    marginTop: 10,
+    paddingVertical: 4,
+  },
+  cancelarOfertaText: {
+    color: colors.muted,
+    fontSize: 12,
+    textDecorationLine: 'underline',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 420,
+    backgroundColor: '#121833',
+    borderRadius: 22,
+    padding: 22,
+    borderWidth: 1.5,
+    borderColor: colors.primary2,
+  },
+  modalTitle: {
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: '800',
+    marginBottom: 10,
+  },
+  modalMensagem: {
+    color: colors.text,
+    fontSize: 14,
+    lineHeight: 21,
+    marginBottom: 18,
+  },
+  modalBotoes: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  modalBtnSecundario: {
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 12,
+    paddingVertical: 13,
+    alignItems: 'center',
+  },
+  modalBtnSecundarioText: {
+    color: colors.muted,
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  modalBtnPrimario: {
+    backgroundColor: colors.primary,
+    borderRadius: 12,
+    paddingVertical: 13,
+    alignItems: 'center',
+  },
+  modalBtnPrimarioText: {
+    color: '#fff',
+    fontWeight: '800',
+    fontSize: 14,
+  },
 });

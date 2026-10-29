@@ -16,9 +16,6 @@ app.use(helmet());
 app.use(cors());
 app.use(express.json({ limit: '10kb' }));
 
-<<<<<<< HEAD
-app.get(['/health', '/api/health'], async (_req, res) => {
-=======
 // Suporta chamadas diretas (:3000/...) e via proxy reverso do Nginx (/api/...)
 app.use((req, _res, next) => {
   if (req.url === '/api') req.url = '/';
@@ -26,8 +23,7 @@ app.use((req, _res, next) => {
   next();
 });
 
-app.get('/health', async (_req, res) => {
->>>>>>> 7ff24a0 (feat: enhance login and security screens, add security panel functionality)
+app.get(['/health', '/api/health'], async (_req, res) => {
   await db.query('SELECT 1');
   res.json({ ok: true });
 });
