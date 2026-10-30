@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { Modal, View, Text, TextInput, TouchableOpacity, FlatList, StyleSheet } from 'react-native';
 import { api, errMsg } from '../api/client';
 import { colors } from '../theme';
@@ -10,11 +10,23 @@ const RESPOSTAS = [
   { id: 3, texto: 'Tive um imprevisto', icone: '⚠️' },
 ];
 
-export default function ChatModal({ visible, onClose, caronaId, meuId, motoristaId }) {
+export default function ChatModal({ visible, onClose, caronaId, meuId, motoristaId, onNovasMsg }) {
   const [historico, setHistorico] = useState([]);
   const [erro, setErro] = useState('');
   const [chatLivre, setChatLivre] = useState(false);
   const [texto, setTexto] = useState('');
+  // Rastreia quantas mensagens já foram vistas para calcular não-lidas
+  const ultimoTotalVistoRef = useRef(0);
+  const visibleRef = useRef(visible);
+
+  useEffect(() => {
+    visibleRef.current = visible;
+  }, [visible]);
+
+  useEffect(() => {
+    // Ao trocar de carona, reinicia contador visto
+    ultimoTotalVistoRef.current = 0;
+  }, [caronaId]);
 
   useEffect(() => {
     if (visible) {
@@ -30,17 +42,32 @@ export default function ChatModal({ visible, onClose, caronaId, meuId, motorista
     try {
       const { data } = await api.get(`/caronas/${caronaId}/mensagens`);
       setHistorico(data);
+      if (visibleRef.current) {
+        ultimoTotalVistoRef.current = data.length;
+        if (typeof onNovasMsg === 'function') onNovasMsg(0);
+      } else if (typeof onNovasMsg === 'function') {
+        const totalAtual = data.length;
+        const naoLidas = Math.max(0, totalAtual - ultimoTotalVistoRef.current);
+        onNovasMsg(naoLidas);
+      }
     } catch (e) {
       setErro(errMsg(e));
     }
-  }, [caronaId]);
+  }, [caronaId, onNovasMsg]);
 
   useEffect(() => {
-    if (!visible) return;
-    carregar();
-    const t = setInterval(carregar, 3000);
-    return () => clearInterval(t);
-  }, [visible, carregar]);
+    if (visible) {
+      if (typeof onNovasMsg === 'function') onNovasMsg(0);
+      carregar();
+      const t = setInterval(carregar, 3000);
+      return () => clearInterval(t);
+    } else if (caronaId) {
+      // Modal fechado: polling a cada 4s para detectar novas mensagens e exibir badge
+      carregar();
+      const t = setInterval(carregar, 4000);
+      return () => clearInterval(t);
+    }
+  }, [visible, caronaId, carregar, onNovasMsg]);
 
   async function enviarTexto() {
     const t = texto.trim();

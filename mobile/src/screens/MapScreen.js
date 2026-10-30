@@ -38,6 +38,7 @@ export default function MapScreen({ onLogout }) {
   const [finalizando, setFinalizando] = useState(false);
   const [modalReabertura, setModalReabertura] = useState(null); // { vagasDisponiveis, mensagem }
   const [republicando, setRepublicando] = useState(false);
+  const [mensagensNaoLidas, setMensagensNaoLidas] = useState(0);
 
   // Quando o usuário move a posição manualmente no mapa (demo web), pausa sobrescrita automática do GPS fixo do PC
   const overrideGpsAteRef = useRef(0);
@@ -620,6 +621,13 @@ export default function MapScreen({ onLogout }) {
                 onPress={() => setChat(true)}
               >
                 <Text style={s.btnText}>💬 Mensagens</Text>
+                {mensagensNaoLidas > 0 && (
+                  <View style={s.chatBadge}>
+                    <Text style={s.chatBadgeText}>
+                      {mensagensNaoLidas > 99 ? '99+' : mensagensNaoLidas}
+                    </Text>
+                  </View>
+                )}
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -750,6 +758,7 @@ export default function MapScreen({ onLogout }) {
         caronaId={carona?.id}
         meuId={meuId}
         motoristaId={carona?.motorista_id}
+        onNovasMsg={setMensagensNaoLidas}
       />
       {meuSosAtivo && carona?.sos_id && (
         <SosChatModal
@@ -994,6 +1003,27 @@ const s = StyleSheet.create({
     opacity: 0.45,
   },
   btnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  chatBadge: {
+    position: 'absolute',
+    top: -8,
+    right: -8,
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: colors.danger,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 5,
+    borderWidth: 2,
+    borderColor: 'rgba(18,24,51,0.96)',
+    zIndex: 1,
+  },
+  chatBadgeText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '900',
+    lineHeight: 14,
+  },
   cancelarOfertaLink: {
     alignSelf: 'center',
     marginTop: 10,
