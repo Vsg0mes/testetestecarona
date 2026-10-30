@@ -269,13 +269,41 @@ router.post('/caronas', async (req, res) => {
     return res.status(422).json({ erro: 'A carona precisa começar ou terminar no campus' });
   }
 
+  // --- Validação de Placa ---
+  // Padrão Tradicional: AAA9999 | Padrão Mercosul: AAA9A99
+  const placaRaw = (carroPlaca || req.body?.carro_placa || '').trim().toUpperCase();
+  if (placaRaw) {
+    const REGEX_PLACA = /^[A-Z]{3}[0-9]{1}[A-Z0-9]{1}[0-9]{2}$/;
+    if (!REGEX_PLACA.test(placaRaw)) {
+      return res.status(422).json({
+        erro: 'Placa inválida. Use o padrão antigo (ex: PHL4506) ou Mercosul (ex: PHL4F06).',
+      });
+    }
+  }
+
+  // --- Validação de Horário ---
+  let horaH = null;
+  let horaM = null;
+  if (horarioPartida) {
+    const matchHora = String(horarioPartida).match(/^(\d{1,2}):(\d{2})$/);
+    if (!matchHora) {
+      return res.status(422).json({ erro: 'Horário inválido. Use o formato HH:mm (ex: 19:30).' });
+    }
+    horaH = parseInt(matchHora[1], 10);
+    horaM = parseInt(matchHora[2], 10);
+    if (horaH < 0 || horaH > 23 || horaM < 0 || horaM > 59) {
+      return res.status(422).json({
+        erro: 'Horário inválido. Horas entre 00 e 23 e minutos entre 00 e 59.',
+      });
+    }
+  }
+
   let dataPartida = new Date();
   if (partidaEm && !isNaN(new Date(partidaEm).getTime())) {
     dataPartida = new Date(partidaEm);
-  } else if (horarioPartida && /^\d{1,2}:\d{2}$/.test(horarioPartida)) {
-    const [h, m] = horarioPartida.split(':').map(Number);
+  } else if (horaH !== null) {
     dataPartida = new Date();
-    dataPartida.setHours(h, m, 0, 0);
+    dataPartida.setHours(horaH, horaM, 0, 0);
     if (dataPartida.getTime() < Date.now() - 30 * 60 * 1000) {
       dataPartida.setDate(dataPartida.getDate() + 1);
     }
@@ -288,7 +316,7 @@ router.post('/caronas', async (req, res) => {
   const anoInt = parseInt(carroAno || req.body?.carro_ano, 10);
   const anoValido = Number.isInteger(anoInt) && anoInt >= 1970 && anoInt <= 2035 ? anoInt : null;
   const cor = (carroCor || req.body?.carro_cor || '').trim().slice(0, 40) || null;
-  const placa = (carroPlaca || req.body?.carro_placa || '').trim().toUpperCase().slice(0, 20) || null;
+  const placa = placaRaw.slice(0, 20) || null;
 
   try {
     const { rows } = await db.query(

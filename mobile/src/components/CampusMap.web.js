@@ -55,6 +55,7 @@ function cortarPolilinha(pontos, posAtual) {
 }
 
 // Web: Leaflet + tiles OpenStreetMap escurecidos via CSS (sem API key)
+// ClickHandler é mantido apenas para uso de telemetria em caronas ativas (onPick sem bloqueio de GPS)
 function ClickHandler({ onPick }) {
   useMapEvents({
     click: (e) => {
@@ -172,7 +173,7 @@ export default function CampusMap({
   return (
     <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 0, isolation: 'isolate', overflow: 'hidden' }}>
       <style>{`.tiles-dark { filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(0.9) saturate(0.6); }
-        .leaflet-container { background: #0B1020; cursor: ${typeof onPick === 'function' ? 'crosshair' : 'default'}; }`}</style>
+        .leaflet-container { background: #0B1020; cursor: default; }`}</style>
       <MapContainer center={c} zoom={14} style={{ height: '100%', width: '100%' }} zoomControl={false}>
         <TileLayer
           url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"

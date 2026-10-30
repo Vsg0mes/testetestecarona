@@ -191,18 +191,17 @@ export default function MapScreen({ onLogout }) {
   }
 
   // Clique no mapa:
-  // - Sem carona ativa: define/ajusta ponto de origem
+  // - Sem carona ativa: localização é EXCLUSIVAMENTE via GPS real — cliques no mapa são ignorados
   // - Com carona ativa: atualiza telemetria GPS em tempo real via POST /caronas/:id/localizacao
   async function handleMapPick(coords) {
     if (!coords || typeof coords.lat !== 'number' || typeof coords.lng !== 'number') return;
+    // 🔒 Bloqueio GPS: sem carona ativa o ponto de origem só vem do sinal real de GPS.
+    // Cliques/toques no mapa NÃO reposicionam o marcador de origem.
+    if (!ativa || !carona?.id) return;
     overrideGpsAteRef.current = Date.now() + 120000;
     setLocalizacao(coords);
-    setPermissaoGps('granted');
-    setErroGps('');
-    if (ativa && carona?.id) {
-      await enviarTelemetria(coords, carona.id);
-      await lerLocalizacoes();
-    }
+    await enviarTelemetria(coords, carona.id);
+    await lerLocalizacoes();
   }
 
   // Avança um passo ao longo da polilinha da rota ativa (útil para demonstrar encurtamento de rota nas vias)
@@ -458,7 +457,7 @@ export default function MapScreen({ onLogout }) {
         campus={campus}
         ponto={carona ? null : localizacao}
         sentido="IDA"
-        onPick={handleMapPick}
+        onPick={ativa ? handleMapPick : null}
         rota={rotaParaMapa}
         pessoas={pessoas}
         paradas={paradasPendentes}
