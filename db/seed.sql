@@ -20,8 +20,8 @@ DELETE FROM caronas WHERE motorista_id IN (
     'diego.alves@unifeb.edu.br','prof.renata@unifeb.edu.br'));
 
 -- Campus UNIFEB: -20.5747, -48.5612
-INSERT INTO caronas (motorista_id, origem_lat, origem_lng, destino_lat, destino_lng, partida_em, vagas, carro_modelo, carro_ano, carro_cor, carro_placa)
-SELECT u.id, v.olat, v.olng, v.dlat, v.dlng, now() + v.em, v.vagas, v.modelo, v.ano, v.cor, v.placa
+INSERT INTO caronas (motorista_id, origem_lat, origem_lng, destino_lat, destino_lng, partida_em, vagas, vagas_disponiveis, carro_modelo, carro_ano, carro_cor, carro_placa)
+SELECT u.id, v.olat, v.olng, v.dlat, v.dlng, now() + v.em, v.vagas, v.vagas, v.modelo, v.ano, v.cor, v.placa
 FROM (VALUES
   -- IDA: bairro -> campus
   ('ana.souza@unifeb.edu.br',    -20.5572, -48.5678, -20.5747, -48.5612, interval '15 minutes', 3, 'Chevrolet Onix', 2021, 'Branco', 'BRA2E19'), -- Centro

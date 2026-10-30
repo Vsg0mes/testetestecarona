@@ -24,6 +24,72 @@ async function garantirSchemaSeguranca() {
     CREATE INDEX IF NOT EXISTS idx_eventos_sos_carona_abertos
       ON eventos_sos (carona_id)
       WHERE status IN ('ABERTO', 'EM_ATENDIMENTO');
+
+    ALTER TABLE caronas ADD COLUMN IF NOT EXISTS vagas_disponiveis SMALLINT;
+    UPDATE caronas
+      SET vagas_disponiveis = CASE
+        WHEN passageiro_id IS NULL THEN vagas
+        ELSE GREATEST(0, vagas - 1)
+      END
+      WHERE vagas_disponiveis IS NULL;
+    ALTER TABLE caronas ALTER COLUMN vagas_disponiveis SET DEFAULT 1;
+    ALTER TABLE caronas ALTER COLUMN vagas_disponiveis SET NOT NULL;
+    ALTER TABLE caronas DROP CONSTRAINT IF EXISTS chk_vagas_disponiveis;
+    ALTER TABLE caronas ADD CONSTRAINT chk_vagas_disponiveis
+      CHECK (vagas_disponiveis >= 0 AND vagas_disponiveis <= vagas);
+
+    CREATE TABLE IF NOT EXISTS passageiros_carona (
+      id          SERIAL PRIMARY KEY,
+      carona_id   INT NOT NULL REFERENCES caronas(id) ON DELETE CASCADE,
+      usuario_id  INT NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+      status      VARCHAR(20) NOT NULL DEFAULT 'AGUARDANDO'
+                  CHECK (status IN ('AGUARDANDO', 'EMBARCADO')),
+      lat         DOUBLE PRECISION CHECK (lat BETWEEN -90 AND 90),
+      lng         DOUBLE PRECISION CHECK (lng BETWEEN -180 AND 180),
+      criado_em   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      embarcou_em TIMESTAMPTZ,
+      UNIQUE (carona_id, usuario_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_passageiros_carona_carona
+      ON passageiros_carona (carona_id, id);
+
+    INSERT INTO passageiros_carona (carona_id, usuario_id, status)
+    SELECT id, passageiro_id, 'AGUARDANDO'
+    FROM caronas
+    WHERE passageiro_id IS NOT NULL
+    ON CONFLICT (carona_id, usuario_id) DO NOTHING;
+
+    ALTER TABLE eventos_sos ADD COLUMN IF NOT EXISTS acionado_por_papel VARCHAR(20);
+    UPDATE eventos_sos s
+    SET acionado_por_papel = CASE
+      WHEN s.usuario_id = c.motorista_id THEN 'MOTORISTA'
+      ELSE 'PASSAGEIRO'
+    END
+    FROM caronas c
+    WHERE c.id = s.carona_id
+      AND s.acionado_por_papel IS NULL;
+    UPDATE eventos_sos SET acionado_por_papel = 'PASSAGEIRO' WHERE acionado_por_papel IS NULL;
+    ALTER TABLE eventos_sos ALTER COLUMN acionado_por_papel SET DEFAULT 'PASSAGEIRO';
+    ALTER TABLE eventos_sos ALTER COLUMN acionado_por_papel SET NOT NULL;
+    ALTER TABLE eventos_sos DROP CONSTRAINT IF EXISTS chk_eventos_sos_papel;
+    ALTER TABLE eventos_sos ADD CONSTRAINT chk_eventos_sos_papel
+      CHECK (acionado_por_papel IN ('MOTORISTA', 'PASSAGEIRO'));
+    CREATE INDEX IF NOT EXISTS idx_eventos_sos_carona_usuario_abertos
+      ON eventos_sos (carona_id, usuario_id)
+      WHERE status IN ('ABERTO', 'EM_ATENDIMENTO');
+
+    CREATE TABLE IF NOT EXISTS sos_chat_mensagens (
+      id          BIGSERIAL PRIMARY KEY,
+      sos_id      BIGINT NOT NULL REFERENCES eventos_sos(id) ON DELETE CASCADE,
+      autor_tipo  VARCHAR(20) NOT NULL CHECK (autor_tipo IN ('USUARIO', 'AGENTE')),
+      usuario_id  INT REFERENCES usuarios(id) ON DELETE SET NULL,
+      agente_id   INT REFERENCES agentes_seguranca(id) ON DELETE SET NULL,
+      autor_nome  VARCHAR(120) NOT NULL,
+      texto       VARCHAR(500) NOT NULL,
+      enviado_em  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_sos_chat_mensagens_sos
+      ON sos_chat_mensagens (sos_id, enviado_em ASC, id ASC);
   `);
 }
 

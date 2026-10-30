@@ -78,6 +78,30 @@ function requireAgente(req, res, next) {
   }
 }
 
+// Permite token de AGENTE ou token de USUARIO (para rotas onde o handler valida propriedade estrita, ex.: chat privado SOS)
+function requireUsuarioOuAgente(req, res, next) {
+  const [scheme, token] = (req.headers.authorization || '').split(' ');
+  if (scheme !== 'Bearer' || !token) {
+    return res.status(401).json({ erro: 'Token ausente' });
+  }
+  try {
+    const payload = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
+    if (payload.role === 'AGENTE' && payload.login) {
+      req.authRole = 'AGENTE';
+      req.agente = { id: Number(payload.sub), login: payload.login, nome: payload.nome };
+      return next();
+    }
+    if (payload.role !== 'AGENTE' && payload.email) {
+      req.authRole = 'USUARIO';
+      req.user = { id: Number(payload.sub), email: payload.email };
+      return next();
+    }
+    return res.status(403).json({ erro: 'Token sem permissão válida' });
+  } catch {
+    return res.status(401).json({ erro: 'Token inválido ou expirado' });
+  }
+}
+
 module.exports = {
   hashSenha,
   verificarSenha,
@@ -85,5 +109,6 @@ module.exports = {
   signAgentToken,
   requireAuth,
   requireAgente,
+  requireUsuarioOuAgente,
   DUMMY_HASH,
 };
